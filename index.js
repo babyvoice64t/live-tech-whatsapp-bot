@@ -9,7 +9,6 @@ import makeWASocket, {
   isLidUser,
   jidNormalizedUser
 } from '@whiskeysockets/baileys';
-import NodeCache from 'node-cache';
 import express from 'express';
 import pino from 'pino';
 import QRCode from 'qrcode';
@@ -35,8 +34,18 @@ let reconnectAttempts = 0;
 const MAX_RECONNECT = 50;
 
 const logger = pino({ level: 'silent' });
-const msgRetryCounterCache = new NodeCache();
-const groupCache = new NodeCache({ stdTTL: 5 * 60, useClones: false });
+// Simple in-memory CacheStore per official docs â€” no external dep needed
+function makeSimpleCache(ttlSec = 0) {
+  const map = new Map();
+  return {
+    get: (k) => map.get(k),
+    set: (k, v) => { map.set(k, v); if (ttlSec) setTimeout(() => map.delete(k), ttlSec * 1000); },
+    del: (k) => map.delete(k),
+    keys: () => [...map.keys()],
+  };
+}
+const msgRetryCounterCache = makeSimpleCache();
+const groupCache = makeSimpleCache(5 * 60);
 const messageStore = new Map();
 const userState = new Map();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
