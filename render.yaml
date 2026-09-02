@@ -1,0 +1,18 @@
+services:
+  - type: web
+    name: live-tech-whatsapp-bot
+    env: node
+    plan: free
+    buildCommand: npm install
+    startCommand: npm start
+    envVars:
+      - key: CLOUDINARY_CLOUD_NAME
+        value: eoriwaaw
+      - key: CLOUDINARY_API_KEY
+        value: 574556244787576
+      - key: CLOUDINARY_API_SECRET
+        sync: false
+      - key: UPLOAD_PASSWORD
+        value: Live@786
+      - key: VAULT_URL
+        value: https://live-tech-backup-system.pages.dev
