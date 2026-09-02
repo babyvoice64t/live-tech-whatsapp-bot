@@ -9,7 +9,7 @@ import makeWASocket, {
   isLidUser,
   jidNormalizedUser
 } from '@whiskeysockets/baileys';
-import NodeCache from '@cacheable/node-cache';
+import NodeCache from 'node-cache';
 import express from 'express';
 import pino from 'pino';
 import QRCode from 'qrcode';
