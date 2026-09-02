@@ -21,6 +21,7 @@ let sock = null;
 let isConnected = false;
 let reconnectAttempts = 0;
 const MAX_RECONNECT = 50;
+let botJid = null; // store bot's own JID
 
 const userState = new Map();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
@@ -168,6 +169,46 @@ function cleanText(t) {
   return (t || '').replace(/[""''Â«Â»]/g, '').trim();
 }
 
+// Resolve LID to PN (phone number JID)
+async function resolveJid(jid) {
+  if (!jid) return jid;
+  if (!jid.endsWith('@lid')) return jid; // already PN
+  try {
+    const pnJid = await sock.signalRepository.lidMapping.getPNForLID(jid);
+    if (pnJid) {
+      console.log(`ðŸ”€ LID resolved: ${jid} â†’ ${pnJid}`);
+      return pnJid;
+    }
+  } catch (e) {
+    console.log(`âš ï¸ LID resolve failed: ${e.message}`);
+  }
+  // Fallback: try using the LID directly (sometimes works)
+  return jid;
+}
+
+// Safe send with LID resolution
+async function safeSend(jid, content) {
+  const resolved = await resolveJid(jid);
+  try {
+    const result = await sock.sendMessage(resolved, content);
+    console.log(`âœ… Sent to ${resolved}: ok=${!!result}`);
+    return result;
+  } catch (err) {
+    console.error(`âŒ Send failed to ${resolved}: ${err.message}`);
+    // If resolved PN failed, try original LID
+    if (resolved !== jid) {
+      try {
+        const result2 = await sock.sendMessage(jid, content);
+        console.log(`âœ… Sent to original ${jid}: ok=${!!result2}`);
+        return result2;
+      } catch (err2) {
+        console.error(`âŒ Original also failed: ${err2.message}`);
+      }
+    }
+    throw err;
+  }
+}
+
 // â”€â”€â”€ Bot Start â”€â”€â”€
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'auth_info'));
@@ -247,19 +288,19 @@ async function startBot() {
           if (num >= 1 && num <= DEFAULT_CATS.length) {
             const cat = DEFAULT_CATS[num - 1];
             try {
-              await sock.sendMessage(jid, { text: `â³ *${cat}* me save ho raha hai...` });
+              await safeSend(jid, { text: `â³ *${cat}* me save ho raha hai...` });
               const out = await uploadToCloudinary(state.pendingFile.buffer, state.pendingFile.filename, cat);
-              await sock.sendMessage(jid, {
+              await safeSend(jid, {
                 text: `âœ… Done!\nðŸ“‚ Category: *${cat}*\nðŸ“„ ${state.pendingFile.filename}\nðŸ”— ${out.secure_url}\n\nVault: ${VAULT_URL}`
               });
               state.pendingFile = null;
             } catch (e) {
-              await sock.sendMessage(jid, { text: `âŒ Upload failed: ${e.message}` });
+              await safeSend(jid, { text: `âŒ Upload failed: ${e.message}` });
             }
           } else if (num === DEFAULT_CATS.length + 1) {
-            await sock.sendMessage(jid, { text: `ðŸ“ Nayi category ka naam likh ke bhejo (jaise: *My Files*)` });
+            await safeSend(jid, { text: `ðŸ“ Nayi category ka naam likh ke bhejo (jaise: *My Files*)` });
           } else {
-            await sock.sendMessage(jid, { text: `âš ï¸ Galat number. 1-${DEFAULT_CATS.length + 1} tak choose karo.` });
+            await safeSend(jid, { text: `âš ï¸ Galat number. 1-${DEFAULT_CATS.length + 1} tak choose karo.` });
           }
           continue;
         }
@@ -269,7 +310,7 @@ async function startBot() {
           const isPass = lower === AUTH_PASSWORD.toLowerCase() || lower === `login ${AUTH_PASSWORD.toLowerCase()}` || lower === `password ${AUTH_PASSWORD.toLowerCase()}`;
           if (isPass) {
             state.loggedIn = true; state.attempts = 0;
-            await sock.sendMessage(jid, {
+            await safeSend(jid, {
               text: `âœ… *Login ho gaya!*\n\nAb file bhejo (image, PDF, video, document).\n\nBhejne ke baad category choose karni hogi.\n\nCommands: *help* Â· *list* Â· *logout*\nVault: ${VAULT_URL}`
             });
             continue;
@@ -277,7 +318,7 @@ async function startBot() {
 
           // Welcome on first message
           if (['hi', 'hello', 'start', 'help', 'start', 'hey'].includes(lower)) {
-            await sock.sendMessage(jid, {
+            await safeSend(jid, {
               text: `*Live Tech Backup Bot*\n\nFile bhejne ke liye pehle password lagta hai.\n\nPassword bhejo to access mil jayega.`
             });
             continue;
@@ -286,28 +327,28 @@ async function startBot() {
           // Wrong password
           state.attempts = (state.attempts || 0) + 1;
           if (state.attempts >= 5) {
-            await sock.sendMessage(jid, { text: `âš ï¸ 5 galat tries. Thodi der baad try karo.` });
+            await safeSend(jid, { text: `âš ï¸ 5 galat tries. Thodi der baad try karo.` });
             setTimeout(() => { state.attempts = 0; }, 15 * 60 * 1000);
           } else {
-            await sock.sendMessage(jid, { text: `ðŸ”’ Password galat hai. Dobara bhejo.` });
+            await safeSend(jid, { text: `ðŸ”’ Password galat hai. Dobara bhejo.` });
           }
           continue;
         }
 
         // â”€â”€â”€ Logged in commands â”€â”€â”€
         if (lower === 'help' || lower === '?') {
-          await sock.sendMessage(jid, {
+          await safeSend(jid, {
             text: `*Help*\n\n1. File bhejo (image/PDF/video)\n2. Category number choose karo\n3. Upload ho jayega + link milega\n\nCommands:\n*help* â€” ye message\n*list* â€” vault link\n*logout* â€” logout`
           });
           continue;
         }
         if (lower === 'list') {
-          await sock.sendMessage(jid, { text: `ðŸ“‚ Vault: ${VAULT_URL}\n\nCategories: ${DEFAULT_CATS.join(' Â· ')}` });
+          await safeSend(jid, { text: `ðŸ“‚ Vault: ${VAULT_URL}\n\nCategories: ${DEFAULT_CATS.join(' Â· ')}` });
           continue;
         }
         if (lower === 'logout') {
           state.loggedIn = false;
-          await sock.sendMessage(jid, { text: `ðŸ‘‹ Logout ho gaya. Dobara login ke liye password bhejo.` });
+          await safeSend(jid, { text: `ðŸ‘‹ Logout ho gaya. Dobara login ke liye password bhejo.` });
           continue;
         }
 
@@ -316,14 +357,14 @@ async function startBot() {
           const catName = text.replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 30);
           if (catName && !DEFAULT_CATS.map(c => c.toLowerCase()).includes(catName.toLowerCase())) {
             try {
-              await sock.sendMessage(jid, { text: `â³ *${catName}* me save ho raha hai...` });
+              await safeSend(jid, { text: `â³ *${catName}* me save ho raha hai...` });
               const out = await uploadToCloudinary(state.pendingFile.buffer, state.pendingFile.filename, catName);
-              await sock.sendMessage(jid, {
+              await safeSend(jid, {
                 text: `âœ… Done!\nðŸ“‚ Category: *${catName}*\nðŸ“„ ${state.pendingFile.filename}\nðŸ”— ${out.secure_url}\n\nVault: ${VAULT_URL}`
               });
               state.pendingFile = null;
             } catch (e) {
-              await sock.sendMessage(jid, { text: `âŒ Upload failed: ${e.message}` });
+              await safeSend(jid, { text: `âŒ Upload failed: ${e.message}` });
             }
             continue;
           }
@@ -346,17 +387,17 @@ async function startBot() {
           if (captionCat) {
             // Direct upload with caption category
             try {
-              await sock.sendMessage(jid, { text: `â³ *${captionCat}* me save ho raha hai...` });
+              await safeSend(jid, { text: `â³ *${captionCat}* me save ho raha hai...` });
               const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger: pino({ level: 'silent' }), reuploadRequest: sock.updateMediaMessage });
               let filename = msg.message.imageMessage?.caption?.split('\n')[0] || msg.message.documentMessage?.fileName || `file-${Date.now()}`;
               if (!filename.includes('.')) { if (isImage) filename += '.jpg'; else if (isDoc) filename += '.pdf'; else filename += '.bin'; }
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
               const out = await uploadToCloudinary(buffer, filename, captionCat);
-              await sock.sendMessage(jid, {
+              await safeSend(jid, {
                 text: `âœ… Done!\nðŸ“‚ Category: *${captionCat}*\nðŸ“„ ${filename}\nðŸ”— ${out.secure_url}\n\nVault: ${VAULT_URL}`
               });
             } catch (e) {
-              await sock.sendMessage(jid, { text: `âŒ Upload failed: ${e.message}` });
+              await safeSend(jid, { text: `âŒ Upload failed: ${e.message}` });
             }
           } else {
             // No category â€” store file and show menu
@@ -366,9 +407,9 @@ async function startBot() {
               if (!filename.includes('.') && isImage) filename += '.jpg';
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
               state.pendingFile = { buffer, filename };
-              await sock.sendMessage(jid, { text: `ðŸ“Ž *${filename}* ready hai\n\n` + catMenu() });
+              await safeSend(jid, { text: `ðŸ“Ž *${filename}* ready hai\n\n` + catMenu() });
             } catch (e) {
-              await sock.sendMessage(jid, { text: `âŒ File read failed: ${e.message}` });
+              await safeSend(jid, { text: `âŒ File read failed: ${e.message}` });
             }
           }
           continue;
@@ -377,14 +418,14 @@ async function startBot() {
         // â”€â”€â”€ Plain text category name (without file) â”€â”€â”€
         const foundCat = DEFAULT_CATS.find(c => c.toLowerCase() === lower);
         if (foundCat) {
-          await sock.sendMessage(jid, { text: `ðŸ“‚ *${foundCat}* select hui. Ab is category me file bhejo.` });
+          await safeSend(jid, { text: `ðŸ“‚ *${foundCat}* select hui. Ab is category me file bhejo.` });
           state.lastCat = foundCat;
           continue;
         }
 
       } catch (err) {
         console.error('Handler error:', err.message);
-        try { await sock.sendMessage(msg.key.remoteJid, { text: `âŒ Error: ${err.message}` }); } catch {}
+        try { await safeSend(msg.key.remoteJid, { text: `âŒ Error: ${err.message}` }); } catch {}
       }
     }
   });
