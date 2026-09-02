@@ -230,8 +230,9 @@ async function startBot() {
     for (const msg of messages) {
       try {
         if (!msg.message || msg.key.fromMe) { console.log('â­ï¸ skip: no message or fromMe'); continue; }
-        console.log(`ðŸ“© from=${msg.key.remoteJid}, type=${Object.keys(msg.message)[0] || 'unknown'}`);
-        const jid = msg.key.remoteJid;
+        console.log(`ðŸ“© from=${msg.key.remoteJid} alt=${msg.key.remoteJidAlt || 'none'}, type=${Object.keys(msg.message)[0] || 'unknown'}`);
+        // Use remoteJidAlt (PN JID) when available for better delivery
+        const jid = msg.key.remoteJidAlt || msg.key.remoteJid;
         const state = getState(jid);
 
         // Extract text from any message type
@@ -393,7 +394,7 @@ async function startBot() {
 
       } catch (err) {
         console.error('Handler error:', err.message);
-        try { await sock.sendMessage(msg.key.remoteJid, { text: `âŒ Error: ${err.message}` }); } catch {}
+        try { await sock.sendMessage(jid, { text: `âŒ Error: ${err.message}` }); } catch {}
       }
     }
   });
