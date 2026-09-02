@@ -1,4 +1,4 @@
-import makeWASocket, { useMultiFileAuthState, downloadMediaMessage, DisconnectReason } from '@whiskeysockets/baileys';
+import makeWASocket, { useMultiFileAuthState, downloadMediaMessage, DisconnectReason, makeCacheableSignalKeyStore, isLidUser } from '@whiskeysockets/baileys';
 import express from 'express';
 import pino from 'pino';
 import QRCode from 'qrcode';
@@ -169,21 +169,24 @@ function cleanText(t) {
   return (t || '').replace(/[""''Â«Â»]/g, '').trim();
 }
 
-// Resolve LID to PN (phone number JID)
+// Resolve LID to PN (phone number JID) - only if needed
 async function resolveJid(jid) {
   if (!jid) return jid;
   if (!jid.endsWith('@lid')) return jid; // already PN
+  // In Baileys v7, sendMessage works with both LID and PN
+  // But if we want to try PN for better compatibility:
   try {
-    const pnJid = await sock.signalRepository.lidMapping.getPNForLID(jid);
-    if (pnJid) {
-      console.log(`ðŸ”€ LID resolved: ${jid} â†’ ${pnJid}`);
-      return pnJid;
+    if (sock.signalRepository?.lidMapping?.getPNForLID) {
+      const pnJid = await sock.signalRepository.lidMapping.getPNForLID(jid);
+      if (pnJid) {
+        console.log(`ðŸ”€ LID resolved: ${jid} â†’ ${pnJid}`);
+        return pnJid;
+      }
     }
   } catch (e) {
-    console.log(`âš ï¸ LID resolve failed: ${e.message}`);
+    console.log(`âš ï¸ LID resolve skipped: ${e.message}`);
   }
-  // Fallback: try using the LID directly (sometimes works)
-  return jid;
+  return jid; // Use LID directly - v7 supports it
 }
 
 // Safe send with LID resolution
@@ -213,7 +216,10 @@ async function safeSend(jid, content) {
 async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'auth_info'));
   sock = makeWASocket({
-    auth: state,
+    auth: {
+      creds: state.creds,
+      keys: makeCacheableSignalKeyStore(state.keys, pino({ level: 'warn' })),
+    },
     logger: pino({ level: 'warn' }),
     printQRInTerminal: false,
     browser: ['Live Tech', 'Safari', '3.0'],
@@ -229,6 +235,11 @@ async function startBot() {
   });
 
   sock.ev.on('creds.update', saveCreds);
+
+  // Cache LID mappings as they come in
+  sock.ev.on('lid-mapping.update', (mapping) => {
+    console.log('ðŸ“‹ LID mapping update:', JSON.stringify(mapping));
+  });
 
   sock.ev.on('connection.update', async (update) => {
     const { connection, lastDisconnect, qr } = update;
