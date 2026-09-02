@@ -94,6 +94,13 @@ app.get('/qr', async (req, res) => {
 
 app.get('/health', (req, res) => res.json({ ok: true, connected: isConnected, users: userState.size }));
 
+app.get('/debug', (req, res) => {
+  if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
+  const users = [];
+  userState.forEach((v, k) => users.push({ jid: k, loggedIn: v.loggedIn, hasPending: !!v.pendingFile, attempts: v.attempts }));
+  res.json({ connected: isConnected, hasSock: !!sock, users, qrPresent: !!qrString });
+});
+
 app.get('/api/stats', (req, res) => {
   if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
   let loggedIn = 0;
@@ -166,7 +173,7 @@ async function startBot() {
   const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'auth_info'));
   sock = makeWASocket({
     auth: state,
-    logger: pino({ level: 'silent' }),
+    logger: pino({ level: 'warn' }),
     printQRInTerminal: false,
     browser: ['Live Tech', 'Safari', '3.0'],
     markOnlineOnConnect: false,
@@ -209,10 +216,12 @@ async function startBot() {
   });
 
   // â”€â”€â”€ Message Handler â”€â”€â”€
-  sock.ev.on('messages.upsert', async ({ messages }) => {
+  sock.ev.on('messages.upsert', async ({ messages, type }) => {
+    console.log(`ðŸ“¨ messages.upsert: type=${type}, count=${messages.length}`);
     for (const msg of messages) {
       try {
-        if (!msg.message || msg.key.fromMe) continue;
+        if (!msg.message || msg.key.fromMe) { console.log('â­ï¸ skip: no message or fromMe'); continue; }
+        console.log(`ðŸ“© from=${msg.key.remoteJid}, type=${Object.keys(msg.message)[0] || 'unknown'}`);
         const jid = msg.key.remoteJid;
         const state = getState(jid);
 
