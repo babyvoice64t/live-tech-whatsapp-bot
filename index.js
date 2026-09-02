@@ -39,23 +39,30 @@ app.get('/', (req,res)=>{
   </div>
   <script>
     async function loadQR(){ try{ const r=await fetch('/qr'); const j=await r.json(); document.getElementById('status').textContent=j.connected?'Connected ✓':'Waiting for scan'; if(j.qr){ document.getElementById('qrBox').innerHTML='<img src="'+j.qr+'" style="width:260px;height:260px;border:1px solid #e4e4e7;border-radius:12px">'; } else if(j.connected){ document.getElementById('qrBox').innerHTML='<div style="color:#16a34a;font-weight:700">✓ Connected — send file to test</div>'; } else document.getElementById('qrBox').textContent='No QR yet, waiting...'; }catch(e){ document.getElementById('status').textContent='error'; } }
-    async function disconnectBot(){ if(!confirm('Disconnect? Need QR again.')) return; await fetch('/disconnect',{method:'POST'}); alert('Disconnected'); location.reload(); }
-    async function reconnectBot(){ await fetch('/reconnect',{method:'POST'}); alert('Reconnecting...'); setTimeout(()=>location.reload(),5000); }
+    async function disconnectBot(){ if(!confirm('Disconnect? Need QR again.')) return; const p=prompt('Admin password (Live@786):'); if(!p) return; const r=await fetch('/disconnect',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password:p})}); const j=await r.json(); if(!r.ok) alert('Failed: '+(j.error||'wrong password')); else { alert('Disconnected'); location.reload(); } }
+    async function reconnectBot(){ const p=prompt('Admin password (Live@786):'); if(!p) return; const r=await fetch('/reconnect',{method:'POST', headers:{'Content-Type':'application/json'}, body: JSON.stringify({password:p})}); const j=await r.json(); if(!r.ok) alert('Failed: '+(j.error||'wrong password')); else { alert('Reconnecting...'); setTimeout(()=>location.reload(),5000); } }
     loadQR(); setInterval(loadQR,4000);
   </script></body></html>`);
 });
+function checkBotAuth(req){
+  const pass = req.query.password || req.headers['x-password'] || req.headers['authorization']?.replace(/^Bearer\s+/i,'') || req.body?.password || '';
+  return pass === AUTH_PASSWORD;
+}
 app.get('/qr', async (req,res)=>{
+  // allow with password, but also allow without for initial setup (viewer can see status only)
   let qrDataUrl=null; if(qrString){ try{ qrDataUrl=await QRCode.toDataURL(qrString);}catch{} }
   res.json({qr:qrDataUrl, connected:isConnected});
 });
 app.get('/health', (req,res)=>res.json({ok:true, connected:isConnected}));
 app.post('/disconnect', async (req,res)=>{
+  if(!checkBotAuth(req)) return res.status(401).json({error:'Unauthorized - admin only'});
   try{ await sock?.logout(); }catch{}
   isConnected=false; qrString=null;
   try{ fs.rmSync(path.join(__dirname,'auth_info'),{recursive:true, force:true}); }catch{}
   res.json({ok:true});
 });
 app.post('/reconnect', async (req,res)=>{
+  if(!checkBotAuth(req)) return res.status(401).json({error:'Unauthorized - admin only'});
   isConnected=false; qrString=null;
   try{ sock?.end?.(undefined);}catch{}
   setTimeout(()=>startBot(),1000);
