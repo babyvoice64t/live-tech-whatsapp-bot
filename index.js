@@ -20,6 +20,10 @@ import { Boom } from '@hapi/boom';
 import { v2 as cloudinary } from 'cloudinary';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
+import os from 'os';
+import { exec } from 'child_process';
+import { promisify } from 'util';
+const execAsync = promisify(exec);
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -278,8 +282,8 @@ async function generateInvoicePdfBuffer(inv) {
     doc.text('Description', 126, top+6, { width: 190, align: 'center' }); doc.text('Qty', 316, top+6, { width: 40, align: 'center' });
     doc.text('Unit Price', 356, top+6, { width: 65, align: 'center' }); doc.text('Discount', 421, top+6, { width: 55, align: 'center' });
     doc.text('Line Total', 476, top+6, { width: 80, align: 'center' });
-    // Table grid
-    const rowH=18; const rows=12; // show 12 rows like template (19-30)
+    // Table grid - only needed rows (dynamic, not 12 empty rows)
+    const rowH=18; const rows=1; // single item, add more when multi-item
     for(let i=0;i<rows;i++){
       const y=top+18 + i*rowH;
       doc.rect(32, y, 531, rowH).strokeColor('#E2E8F0').lineWidth(0.4).stroke();
@@ -325,10 +329,20 @@ async function generateInvoiceExcelBuffer(inv) {
   // Remove 2 logos
   try { ws.getImages().forEach(img=> ws.removeImage(img.imageId)); } catch {}
   try { ws.model.media = []; } catch {}
-  // Fix AutoFilter/Table corruption - remove tables that ExcelJS can't preserve
+  // Fix AutoFilter/Table corruption
   try { ws.autoFilter = null; } catch {}
   try { if(ws.model && ws.model.tables) ws.model.tables = []; } catch {}
   try { if(ws.tables) ws.tables = []; } catch {}
+  // Hide extra invoice rows 20-38 when not needed (only show used rows)
+  try {
+    const usedRows = 1; // currently single item at row 19, extend when multi-item
+    for(let r=20;r<=38;r++){
+      ws.getRow(r).hidden = r > 19 + usedRows -1;
+      if(r > 19 + usedRows -1) ws.getRow(r).height = 0;
+    }
+    // Adjust print area to only used rows + totals (up to 50)
+    ws.pageSetup.printArea = `A1:H${44 + usedRows}`;
+  } catch {}
   const lineTotal=(Number(inv.qty)||0)*(Number(inv.rate)||0)-(Number(inv.discount)||0);
   try { ws.getCell('H6').value = inv.date; } catch {}
   try { ws.getCell('H7').value = String(inv.invoiceNo); } catch {}
@@ -350,6 +364,23 @@ async function generateInvoiceExcelBuffer(inv) {
   } catch {}
   const buf = await wb.xlsx.writeBuffer();
   return Buffer.from(buf);
+}
+async function generatePdfFromExcelBuffer(excelBuf) {
+  // Try LibreOffice headless conversion (exact Excel print to PDF) - same file
+  const tmpDir = os.tmpdir();
+  const xlsxPath = path.join(tmpDir, `inv_${Date.now()}.xlsx`);
+  const pdfPath = xlsxPath.replace('.xlsx', '.pdf');
+  await fs.promises.writeFile(xlsxPath, excelBuf);
+  try {
+    await execAsync(`soffice --headless --convert-to pdf --outdir "${tmpDir}" "${xlsxPath}"`);
+    const pdfBuf = await fs.promises.readFile(pdfPath);
+    await fs.promises.unlink(xlsxPath).catch(()=>{});
+    await fs.promises.unlink(pdfPath).catch(()=>{});
+    return pdfBuf;
+  } catch(e) {
+    await fs.promises.unlink(xlsxPath).catch(()=>{});
+    throw e;
+  }
 }
 
 function catMenu() {
@@ -626,26 +657,31 @@ async function startBot() {
             try {
               const lineTotal=(Number(inv.qty)||0)*(Number(inv.rate)||0);
               inv.discount='0'; inv.client=inv.client||'Walk-in Client';
-              // PDF - exact template design
-              const pdfBuf=await generateInvoicePdfBuffer(inv);
-              const pdfName=`Invoice-${inv.invoiceNo}.pdf`;
-              const pdfOut=await new Promise(async (res, rej)=>{
-                try{
-                  const b64=pdfBuf.toString('base64');
-                  const dataUri=`data:application/pdf;base64,${b64}`;
-                  const out=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: pdfName.replace('.pdf',''), use_filename:true, unique_filename:true, resource_type:'auto' });
-                  res(out);
-                }catch(e){ rej(e); }
-              });
-              // Also Excel via template - exact same design (same file overwrite)
+              // Excel - exact same file overwrite (single source of truth)
+              const excelBuf=await generateInvoiceExcelBuffer(inv);
               let excelUrl='';
               try{
-                const excelBuf=await generateInvoiceExcelBuffer(inv);
                 const b64=excelBuf.toString('base64');
                 const dataUri=`data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${b64}`;
                 const out2=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}.xlsx`, use_filename:true, unique_filename:true, resource_type:'raw' });
                 excelUrl=out2.secure_url;
-              }catch(e){ console.log('Excel gen fail',e.stack||e.message); excelUrl=`Error: ${e.message}`; }
+              }catch(e){ console.log('Excel gen fail',e.stack||e.message); throw e; }
+              // PDF - same Excel file se hi (exact design, 1-page center)
+              let pdfOut=null;
+              try{
+                const pdfBuf=await generatePdfFromExcelBuffer(excelBuf);
+                const b64=pdfBuf.toString('base64');
+                const dataUri=`data:application/pdf;base64,${b64}`;
+                const pdfName=`Invoice-${inv.invoiceNo}.pdf`;
+                pdfOut=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: pdfName.replace('.pdf',''), use_filename:true, unique_filename:true, resource_type:'auto' });
+              }catch(e){
+                console.log('PDF from Excel fail, fallback to template PDF', e.message);
+                const pdfBuf=await generateInvoicePdfBuffer(inv);
+                const b64=pdfBuf.toString('base64');
+                const dataUri=`data:application/pdf;base64,${b64}`;
+                const pdfName=`Invoice-${inv.invoiceNo}.pdf`;
+                pdfOut=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: pdfName.replace('.pdf',''), use_filename:true, unique_filename:true, resource_type:'auto' });
+              }
               state.invoice=null;
               let msg=`Ho gaya! Invoice ban gaya.\nInvoice #: ${inv.invoiceNo}\nDate: ${inv.date}\nDescription: ${inv.description}\nQty: ${inv.qty} | Rate: ${inv.rate} | Brand: ${inv.brand||'-'}\nTotal: ${lineTotal.toFixed(2)}\n\nPDF: ${pdfOut.secure_url}`;
               if(excelUrl) msg+=`\nExcel: ${excelUrl}`;
