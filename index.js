@@ -17,6 +17,7 @@ import path from 'path';
 import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { Boom } from '@hapi/boom';
+import { v2 as cloudinary } from 'cloudinary';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -26,6 +27,8 @@ const API_KEY = process.env.CLOUDINARY_API_KEY || '574556244787576';
 const API_SECRET = process.env.CLOUDINARY_API_SECRET || '6Zz697mbMjQ9HPcxOiFXgKiaM3E';
 const AUTH_PASSWORD = process.env.UPLOAD_PASSWORD || 'Live@786';
 const VAULT_URL = process.env.VAULT_URL || 'https://live-tech-backup-system.pages.dev';
+
+cloudinary.config({ cloud_name: CLOUD_NAME, api_key: API_KEY, api_secret: API_SECRET });
 
 let qrString = null;
 let sock = null;
@@ -167,29 +170,28 @@ app.post('/reconnect', async (req, res) => {
   res.json({ ok: true });
 });
 
-// â”€â”€â”€ Cloudinary Upload â€” fixed: add fd headers, proper error log â”€â”€â”€
+// â”€â”€â”€ Cloudinary Upload â€” via SDK (no manual signature, fixes preset error) â”€â”€â”€
 async function uploadToCloudinary(buffer, filename, category) {
-  const timestamp = Math.floor(Date.now() / 1000);
   const folder = `live-tech-backup/${category}`;
-  const params = { folder, timestamp, use_filename: 'true', unique_filename: 'true' };
-  const toSign = Object.keys(params).sort().map(k => `${k}=${params[k]}`).join('&');
-  const signature = crypto.createHash('sha1').update(toSign + API_SECRET).digest('hex');
-  const FormData = (await import('form-data')).default;
-  const fd = new FormData();
-  fd.append('file', buffer, { filename });
-  fd.append('api_key', API_KEY);
-  fd.append('timestamp', String(timestamp));
-  fd.append('signature', signature);
-  fd.append('folder', folder);
-  fd.append('use_filename', 'true');
-  fd.append('unique_filename', 'true');
-  const resp = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/auto/upload`, { method: 'POST', body: fd, headers: fd.getHeaders() });
-  const out = await resp.json();
-  if (!resp.ok) {
-    console.error('Cloudinary error:', JSON.stringify(out));
-    throw new Error(out.error?.message || 'cloudinary failed');
+  // Use data URI so SDK handles signing correctly
+  const base64 = buffer.toString('base64');
+  const ext = filename.split('.').pop()?.toLowerCase() || 'bin';
+  const mimeMap = { jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', pdf:'application/pdf', mp4:'video/mp4', mov:'video/quicktime' };
+  const mime = mimeMap[ext] || 'application/octet-stream';
+  const dataUri = `data:${mime};base64,${base64}`;
+  try {
+    const out = await cloudinary.uploader.upload(dataUri, {
+      folder,
+      public_id: filename.replace(/\.[^/.]+$/, '').slice(0,80),
+      use_filename: true,
+      unique_filename: true,
+      resource_type: 'auto',
+    });
+    return out;
+  } catch (e) {
+    console.error('Cloudinary SDK error:', e.message);
+    throw new Error(e.error?.message || e.message || 'cloudinary failed');
   }
-  return out;
 }
 
 function getState(jid) {
