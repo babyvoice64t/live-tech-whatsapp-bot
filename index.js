@@ -18,6 +18,8 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { Boom } from '@hapi/boom';
 import { v2 as cloudinary } from 'cloudinary';
+import ExcelJS from 'exceljs';
+import PDFDocument from 'pdfkit';
 
 const __dirname = path.dirname(fileURLToPath(import.meta.url));
 const app = express();
@@ -196,10 +198,90 @@ async function uploadToCloudinary(buffer, filename, category) {
 
 function getState(jid) {
   const norm = jidNormalizedUser(jid);
-  if (!userState.has(norm)) userState.set(norm, { loggedIn: false, attempts: 0, pendingFile: null, lastCat: null, rawJid: jid });
+  if (!userState.has(norm)) userState.set(norm, { loggedIn: false, attempts: 0, pendingFile: null, lastCat: null, rawJid: jid, mode: null, invoice: null });
   const s = userState.get(norm);
   s.rawJid = jid;
   return s;
+}
+
+function mainMenuText() {
+  return `Main Menu:\n1. Backup add karna (file bhejo)\n2. Invoice banana\n\n1 ya 2 bhejo`;
+}
+
+function formatDateDDMMYYYY(d) {
+  const dd=String(d.getDate()).padStart(2,'0'), mm=String(d.getMonth()+1).padStart(2,'0'), yyyy=d.getFullYear();
+  return `${dd}-${mm}-${yyyy}`;
+}
+function parseDateInput(t) {
+  const s=t.trim();
+  if(s.toLowerCase()==='today') return formatDateDDMMYYYY(new Date());
+  // try DD-MM-YYYY or DD/MM/YYYY or YYYY-MM-DD
+  const m=s.match(/^(\d{1,2})[\/-](\d{1,2})[\/-](\d{4})$/);
+  if(m) return `${m[1].padStart(2,'0')}-${m[2].padStart(2,'0')}-${m[3]}`;
+  const m2=s.match(/^(\d{4})[\/-](\d{1,2})[\/-](\d{1,2})$/);
+  if(m2) return `${m2[3].padStart(2,'0')}-${m2[2].padStart(2,'0')}-${m2[1]}`;
+  return null;
+}
+function numberToWords(n) {
+  const a=['','One','Two','Three','Four','Five','Six','Seven','Eight','Nine','Ten','Eleven','Twelve','Thirteen','Fourteen','Fifteen','Sixteen','Seventeen','Eighteen','Nineteen'];
+  const b=['','','Twenty','Thirty','Forty','Fifty','Sixty','Seventy','Eighty','Ninety'];
+  const num=parseInt(n,10); if(isNaN(num)) return 'Zero Only'; if(num===0) return 'Zero Only';
+  function w(x){ if(x<20) return a[x]; if(x<100) return b[Math.floor(x/10)] + (x%10? ' '+a[x%10]:''); if(x<1000) return a[Math.floor(x/100)]+' Hundred'+(x%100? ' '+w(x%100):''); return w(Math.floor(x/1000))+' Thousand'+(x%1000? ' '+w(x%1000):''); }
+  return w(num)+' Only';
+}
+
+async function generateInvoicePdfBuffer(inv) {
+  return new Promise((resolve, reject) => {
+    const doc = new PDFDocument({ size: 'A4', margin: 36 });
+    const bufs=[]; doc.on('data', d=>bufs.push(d)); doc.on('end', ()=>resolve(Buffer.concat(bufs))); doc.on('error', reject);
+    // Header
+    doc.fontSize(10).fillColor('#0F172A').text('UA International', 36, 36, { continued: false });
+    doc.fontSize(7).fillColor('#475569').text('IT Solution provider', 36, 50);
+    doc.fontSize(7).text('9 Floor Office # 905 Uni Center, II Chundrigar Road Karachi.', 36, 62);
+    doc.fontSize(18).fillColor('#0E4D2A').text('Invoice', 400, 36, { align: 'right' });
+    doc.fontSize(9).fillColor('#0F172A').text(`Date: ${inv.date}`, 400, 60, { align: 'right' });
+    doc.text(`Invoice #: ${inv.invoiceNo}`, 400, 75, { align: 'right' });
+    // Client
+    doc.moveDown(2); doc.fontSize(9).fillColor('#0F172A').text(`Client Bill: ${inv.client || 'Walk-in Client'}`, 36, 110);
+    // Table header
+    const top=140; doc.fontSize(8).fillColor('white'); doc.rect(36, top, 523, 18).fill('#0F172A');
+    doc.fillColor('white').text('S/No', 40, top+6, { width: 30 }); doc.text('Brand', 70, top+6, { width: 60 });
+    doc.text('Description', 130, top+6, { width: 200 }); doc.text('Qty', 330, top+6, { width: 40, align:'right' });
+    doc.text('Unit Price', 370, top+6, { width: 60, align:'right' }); doc.text('Discount', 430, top+6, { width: 50, align:'right' });
+    doc.text('Line Total', 480, top+6, { width: 70, align:'right' });
+    // Row
+    const y=top+22; doc.fillColor('#0F172A').fontSize(8);
+    const lineTotal = (parseFloat(inv.qty)||0)*(parseFloat(inv.rate)||0) - (parseFloat(inv.discount)||0);
+    doc.text('1', 40, y, { width:30 }); doc.text(inv.brand||'-', 70, y, { width:60 });
+    doc.text(inv.description, 130, y, { width:200 }); doc.text(String(inv.qty), 330, y, { width:40, align:'right' });
+    doc.text(String(inv.rate), 370, y, { width:60, align:'right' }); doc.text(String(inv.discount||0), 430, y, { width:50, align:'right' });
+    doc.text(lineTotal.toFixed(2), 480, y, { width:70, align:'right' });
+    // Totals
+    const ty=y+30; doc.fontSize(9).text('Subtotal', 430, ty, { width:50, align:'right' }); doc.text(lineTotal.toFixed(2), 480, ty, { width:70, align:'right' });
+    doc.text('Total', 430, ty+15, { width:50, align:'right' }); doc.font('Helvetica-Bold').text(lineTotal.toFixed(2), 480, ty+15, { width:70, align:'right' }); doc.font('Helvetica');
+    doc.fontSize(8).text(`Amount In Words: ${numberToWords(lineTotal)}`, 36, ty+35);
+    doc.fontSize(8).fillColor('#475569').text('Thank you for your business!', 36, ty+55, { align:'center' });
+    doc.fontSize(6).fillColor('#94A3B8').text('Generated by Live Tech Backup System', 36, 800, { align:'center' });
+    doc.end();
+  });
+}
+async function generateInvoiceExcelBuffer(inv) {
+  const templatePath = path.join(__dirname, 'template.xlsm');
+  const wb = new ExcelJS.Workbook();
+  // try load template, else create blank
+  try { await wb.xlsx.readFile(templatePath); } catch { /* fallback blank */ }
+  let ws = wb.getWorksheet('Sales Invoice') || wb.worksheets[0] || wb.addWorksheet('Sales Invoice');
+  // Fill key cells exactly as template
+  try { ws.getCell('H6').value = inv.date; } catch {}
+  try { ws.getCell('H7').value = inv.invoiceNo; } catch {}
+  try { ws.getCell('F10').value = inv.client || 'Walk-in Client'; } catch {}
+  // Invoice table row 19
+  try { ws.getCell('B19').value = 1; ws.getCell('C19').value = inv.brand || ''; ws.getCell('D19').value = inv.description; ws.getCell('E19').value = Number(inv.qty)||0; ws.getCell('F19').value = Number(inv.rate)||0; ws.getCell('G19').value = Number(inv.discount)||0; } catch {}
+  // Amount in words D44
+  const lineTotal=(Number(inv.qty)||0)*(Number(inv.rate)||0)-(Number(inv.discount)||0);
+  try { ws.getCell('D44').value = numberToWords(lineTotal); } catch {}
+  const buf = await wb.xlsx.writeBuffer();
+  return Buffer.from(buf);
 }
 
 function catMenu() {
@@ -393,15 +475,14 @@ async function startBot() {
         if (!state.loggedIn) {
           const isPass = lower === AUTH_PASSWORD.toLowerCase() || lower === `login ${AUTH_PASSWORD.toLowerCase()}` || lower === `password ${AUTH_PASSWORD.toLowerCase()}`;
           if (isPass) {
-            state.loggedIn = true; state.attempts = 0;
+            state.loggedIn = true; state.attempts = 0; state.mode=null; state.invoice=null; state._menuShown=false;
             await sendMessageSafe(primaryJid, fallbackJid, {
-              text: `Login ho gaya! Ab aap file bhejo (image, PDF, video, document).\n\nBhejne ke baad category choose karni hogi.\n\nCommands: help - madad, list - vault link, logout - bahar\nVault: ${VAULT_URL}`
+              text: `Login ho gaya!\n\n${mainMenuText()}\n\nVault: ${VAULT_URL}`
             });
             continue;
           }
 
           if (isGreeting(lower) || lower.length < 10) {
-            // Smart greeting in Roman Urdu
             const greet = lower.includes('salam') || lower.includes('aoa') ? 'Wa Alaikum Salam!' : 'Assalam o Alaikum!';
             await sendMessageSafe(primaryJid, fallbackJid, {
               text: `${greet} Live Tech Backup Bot me khush amdeed.\n\nFile bhejne ke liye pehle password bhejo, phir aap file upload kar sakte ho.`
@@ -419,10 +500,117 @@ async function startBot() {
           continue;
         }
 
+        // â”€â”€â”€ Invoice flow â€” handle if active â”€â”€â”€
+        if (state.invoice) {
+          if (lower==='cancel' || lower==='menu' || lower==='exit') { state.invoice=null; await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice cancel ho gaya.\n\n${mainMenuText()}` }); continue; }
+          const inv = state.invoice;
+          if (inv.step === 'date') {
+            let d=null;
+            if (lower==='today' || lower==='aaj') d=formatDateDDMMYYYY(new Date());
+            else d=parseDateInput(text);
+            if (!d) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Date samajh nahi aayi. Today likho ya DD-MM-YYYY me bhejo (jaise 04-09-2026)` }); continue; }
+            inv.date=d; inv.step='invoiceNo';
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Date: ${d} save ho gayi.\nAb Invoice No bhejo (jaise 9265)` });
+            continue;
+          }
+          if (inv.step === 'invoiceNo') {
+            if (!text || text.length<1) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice No khali nahi, dobara bhejo` }); continue; }
+            inv.invoiceNo=text.trim(); inv.step='description';
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice # ${inv.invoiceNo} save.\nAb Description bhejo (kaam ka naam)` });
+            continue;
+          }
+          if (inv.step === 'description') {
+            if (!text || text.length<2) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Description chhota hai, dobara bhejo` }); continue; }
+            inv.description=text.trim(); inv.step='qty';
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Description save.\nAb Qty bhejo (number, jaise 1 ya 5)` });
+            continue;
+          }
+          if (inv.step === 'qty') {
+            const q=parseFloat(text); if(isNaN(q)||q<=0){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Qty number me bhejo, jaise 2` }); continue; }
+            inv.qty=String(q); inv.step='rate';
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Qty ${q} save.\nAb Rate / Unit Price bhejo (jaise 5000)` });
+            continue;
+          }
+          if (inv.step === 'rate') {
+            const r=parseFloat(text); if(isNaN(r)||r<0){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Rate number me bhejo` }); continue; }
+            inv.rate=String(r); inv.step='brand';
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Rate ${r} save.\nAb Brand bhejo (optional hai, skip ke liye - bhejo)` });
+            continue;
+          }
+          if (inv.step === 'brand') {
+            inv.brand = (text.trim()==='-' ? '' : text.trim()); 
+            // Generate invoice now
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, aapka invoice ban raha hai...` });
+            try {
+              const lineTotal=(Number(inv.qty)||0)*(Number(inv.rate)||0);
+              inv.discount='0'; inv.client=inv.client||'Walk-in Client';
+              // PDF
+              const pdfBuf=await generateInvoicePdfBuffer(inv);
+              const pdfName=`Invoice-${inv.invoiceNo}.pdf`;
+              const pdfOut=await new Promise(async (res, rej)=>{
+                try{
+                  const b64=pdfBuf.toString('base64');
+                  const dataUri=`data:application/pdf;base64,${b64}`;
+                  const out=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: pdfName.replace('.pdf',''), use_filename:true, unique_filename:true, resource_type:'auto' });
+                  res(out);
+                }catch(e){ rej(e); }
+              });
+              // Also Excel via template
+              let excelUrl='';
+              try{
+                const excelBuf=await generateInvoiceExcelBuffer(inv);
+                const b64=excelBuf.toString('base64');
+                const dataUri=`data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${b64}`;
+                const out2=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}`, use_filename:true, unique_filename:true, resource_type:'auto' });
+                excelUrl=out2.secure_url;
+              }catch(e){ console.log('Excel gen fail',e.message); }
+              state.invoice=null;
+              let msg=`Ho gaya! Invoice ban gaya.\nInvoice #: ${inv.invoiceNo}\nDate: ${inv.date}\nDescription: ${inv.description}\nQty: ${inv.qty} | Rate: ${inv.rate} | Brand: ${inv.brand||'-'}\nTotal: ${lineTotal.toFixed(2)}\n\nPDF: ${pdfOut.secure_url}`;
+              if(excelUrl) msg+=`\nExcel: ${excelUrl}`;
+              msg+=`\n\nVault: ${VAULT_URL}`;
+              await sendMessageSafe(primaryJid, fallbackJid, { text: msg });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
+            } catch(e){
+              state.invoice=null;
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice banane me error: ${e.message}` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
+            }
+            continue;
+          }
+        }
+
+        // â”€â”€â”€ Main menu after login â€” 2 options â”€â”€â”€
+        if (lower==='menu' || lower==='main' || lower==='1' || lower==='2' || lower==='backup' || lower.includes('invoice')) {
+          if (lower==='1' || lower==='backup' || lower==='1 backup') {
+            state.mode='backup'; state.invoice=null;
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Backup mode on hai. Ab file bhejo (image, PDF, video, xlsx).` });
+            continue;
+          }
+          if (lower==='2' || lower.includes('invoice')) {
+            state.mode='invoice'; state.invoice={step:'date', date:'', invoiceNo:'', description:'', qty:'', rate:'', brand:'', discount:'0'};
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice banana shuru.\nDate bhejo - Today likho ya custom date (DD-MM-YYYY) bhejo` });
+            continue;
+          }
+          // if just menu/help, show menu
+          if (lower==='menu' || lower==='main') {
+            await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
+            continue;
+          }
+        }
+        // Auto show menu if no mode and no pendingFile and no invoice
+        if (!state.invoice && !state.pendingFile && !['help','?','list','logout'].includes(lower) && !lower.includes('vault') && !lower.includes('link') && !lower.includes('madad')) {
+          // if user just logged in and sends something else, show menu once
+          if (!state._menuShown) {
+            state._menuShown=true;
+            await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
+            continue;
+          }
+        }
+
         // â”€â”€â”€ Logged in commands â€” smart â”€â”€â”€
         if (lower === 'help' || lower === '?' || lower.includes('madad') || lower.includes('help')) {
           await sendMessageSafe(primaryJid, fallbackJid, {
-            text: `Help:\n1. File bhejo (image/PDF/video)\n2. Category number choose karo (1-5)\n3. Upload ho jayega + link milega\n\nCommands:\nhelp - ye message\nlist - vault link dekho\nlogout - bahar niklo`
+            text: `Help:\n1. File bhejo (image/PDF/video)\n2. Category number choose karo (1-5)\n3. Upload ho jayega + link milega\n\nCommands:\nhelp - ye message\nlist - vault link dekho\nlogout - bahar niklo\nmenu - main menu`
           });
           continue;
         }
@@ -431,7 +619,7 @@ async function startBot() {
           continue;
         }
         if (lower === 'logout' || lower.includes('bahar') || lower.includes('exit')) {
-          state.loggedIn = false;
+          state.loggedIn = false; state.invoice=null; state.mode=null; state._menuShown=false;
           await sendMessageSafe(primaryJid, fallbackJid, { text: `Logout ho gaya. Dobara login ke liye password bhejo.` });
           continue;
         }
@@ -454,10 +642,14 @@ async function startBot() {
           }
         }
 
-        // â”€â”€â”€ Handle media â”€â”€â”€
+        // â”€â”€â”€ Handle media â€” block if invoice active â”€â”€â”€
         const isImage = !!msg.message.imageMessage;
         const isDoc = !!msg.message.documentMessage;
         const isVideo = !!msg.message.videoMessage;
+        if (state.invoice && (isImage || isDoc || isVideo)) {
+          await sendMessageSafe(primaryJid, fallbackJid, { text: `Pehle invoice complete karo ya cancel likho.` });
+          continue;
+        }
 
         if (isImage || isDoc || isVideo) {
           const caption = cleanText(msg.message.imageMessage?.caption || msg.message.documentMessage?.caption || '');
