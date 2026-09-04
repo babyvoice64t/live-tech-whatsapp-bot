@@ -318,14 +318,17 @@ async function generateInvoiceExcelBuffer(inv) {
   const templatePath = path.join(__dirname, 'template.xlsm');
   const wb = new ExcelJS.Workbook();
   try { await wb.xlsx.readFile(templatePath); } catch(e){ console.log('Template load fail', e.message); throw e; }
-  // Keep only Sales Invoice sheet, remove others
+  // Keep only Sales Invoice sheet
   const keep = 'Sales Invoice';
   wb.worksheets.slice().forEach(s=>{ if(s.name!==keep) try{ wb.removeWorksheet(s.id); }catch{} });
   let ws = wb.getWorksheet(keep) || wb.worksheets[0];
-  // Remove 2 logos on right side (images)
+  // Remove 2 logos
   try { ws.getImages().forEach(img=> ws.removeImage(img.imageId)); } catch {}
-  // Also clear images via model
   try { ws.model.media = []; } catch {}
+  // Fix AutoFilter/Table corruption - remove tables that ExcelJS can't preserve
+  try { ws.autoFilter = null; } catch {}
+  try { if(ws.model && ws.model.tables) ws.model.tables = []; } catch {}
+  try { if(ws.tables) ws.tables = []; } catch {}
   const lineTotal=(Number(inv.qty)||0)*(Number(inv.rate)||0)-(Number(inv.discount)||0);
   try { ws.getCell('H6').value = inv.date; } catch {}
   try { ws.getCell('H7').value = String(inv.invoiceNo); } catch {}
