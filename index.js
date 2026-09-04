@@ -167,7 +167,7 @@ app.post('/reconnect', async (req, res) => {
   res.json({ ok: true });
 });
 
-// â”€â”€â”€ Cloudinary Upload â”€â”€â”€
+// â”€â”€â”€ Cloudinary Upload â€” fixed: add fd headers, proper error log â”€â”€â”€
 async function uploadToCloudinary(buffer, filename, category) {
   const timestamp = Math.floor(Date.now() / 1000);
   const folder = `live-tech-backup/${category}`;
@@ -183,9 +183,12 @@ async function uploadToCloudinary(buffer, filename, category) {
   fd.append('folder', folder);
   fd.append('use_filename', 'true');
   fd.append('unique_filename', 'true');
-  const resp = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/auto/upload`, { method: 'POST', body: fd });
+  const resp = await fetch(`https://api.cloudinary.com/v1_1/${CLOUD_NAME}/auto/upload`, { method: 'POST', body: fd, headers: fd.getHeaders() });
   const out = await resp.json();
-  if (!resp.ok) throw new Error(out.error?.message || 'cloudinary failed');
+  if (!resp.ok) {
+    console.error('Cloudinary error:', JSON.stringify(out));
+    throw new Error(out.error?.message || 'cloudinary failed');
+  }
   return out;
 }
 
@@ -198,15 +201,20 @@ function getState(jid) {
 }
 
 function catMenu() {
-  let lines = ['ðŸ“‚ *Category choose karo:*\n'];
-  DEFAULT_CATS.forEach((c, i) => lines.push(`  *${i + 1}.* ${c}`));
-  lines.push(`  *${DEFAULT_CATS.length + 1}.* New Category (apna naam likho)`);
-  lines.push(`\nNumber bhejo ya naam likho â€” jaise *1* ya *Invoice*`);
+  let lines = ['Category choose karo:\n'];
+  DEFAULT_CATS.forEach((c, i) => lines.push(`  ${i + 1}. ${c}`));
+  lines.push(`  ${DEFAULT_CATS.length + 1}. New Category (apna naam likho)`);
+  lines.push(`\nNumber bhejo ya naam likho - jaise 1 ya Invoice`);
   return lines.join('\n');
 }
 
 function cleanText(t) {
-  return (t || '').replace(/[""''Â«Â»]/g, '').trim();
+  return (t || '').trim();
+}
+
+function isGreeting(text) {
+  const l = text.toLowerCase();
+  return ['hi','hello','hey','salam','asalam','assalam','aoa','aslam o alaikum','salam alaikum','start','help','hello bhai','salam bhai'].some(g => l.includes(g));
 }
 
 // Robust send: tries primary JID then fallback, logs every attempt per official docs
@@ -362,65 +370,67 @@ async function startBot() {
           if (num >= 1 && num <= DEFAULT_CATS.length) {
             const cat = DEFAULT_CATS[num - 1];
             try {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `â³ *${cat}* me save ho raha hai...` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${cat} me save ho raha hai...` });
               const out = await uploadToCloudinary(state.pendingFile.buffer, state.pendingFile.filename, cat);
               await sendMessageSafe(primaryJid, fallbackJid, {
-                text: `âœ… Done!\nðŸ“‚ Category: *${cat}*\nðŸ“„ ${state.pendingFile.filename}\nðŸ”— ${out.secure_url}\n\nVault: ${VAULT_URL}`
+                text: `Ho gaya!\nCategory: ${cat}\nFile: ${state.pendingFile.filename}\nLink: ${out.secure_url}\n\nVault: ${VAULT_URL}`
               });
               state.pendingFile = null;
             } catch (e) {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `âŒ Upload failed: ${e.message}` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` });
             }
           } else if (num === DEFAULT_CATS.length + 1) {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `ðŸ“ Nayi category ka naam likh ke bhejo (jaise: *My Files*)` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Nayi category ka naam likh ke bhejo (jaise: My Files)` });
           } else {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `âš ï¸ Galat number. 1-${DEFAULT_CATS.length + 1} tak choose karo.` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Galat number. 1-${DEFAULT_CATS.length + 1} tak choose karo.` });
           }
           continue;
         }
 
-        // â”€â”€â”€ Password check â”€â”€â”€
+        // â”€â”€â”€ Password check â€” smart Roman Urdu â”€â”€â”€
         if (!state.loggedIn) {
           const isPass = lower === AUTH_PASSWORD.toLowerCase() || lower === `login ${AUTH_PASSWORD.toLowerCase()}` || lower === `password ${AUTH_PASSWORD.toLowerCase()}`;
           if (isPass) {
             state.loggedIn = true; state.attempts = 0;
             await sendMessageSafe(primaryJid, fallbackJid, {
-              text: `âœ… *Login ho gaya!*\n\nAb file bhejo (image, PDF, video, document).\n\nBhejne ke baad category choose karni hogi.\n\nCommands: *help* Â· *list* Â· *logout*\nVault: ${VAULT_URL}`
+              text: `Login ho gaya! Ab aap file bhejo (image, PDF, video, document).\n\nBhejne ke baad category choose karni hogi.\n\nCommands: help - madad, list - vault link, logout - bahar\nVault: ${VAULT_URL}`
             });
             continue;
           }
 
-          if (['hi', 'hello', 'start', 'help', 'hey'].includes(lower)) {
+          if (isGreeting(lower) || lower.length < 10) {
+            // Smart greeting in Roman Urdu
+            const greet = lower.includes('salam') || lower.includes('aoa') ? 'Wa Alaikum Salam!' : 'Assalam o Alaikum!';
             await sendMessageSafe(primaryJid, fallbackJid, {
-              text: `*Live Tech Backup Bot*\n\nFile bhejne ke liye pehle password lagta hai.\n\nPassword bhejo to access mil jayega.`
+              text: `${greet} Live Tech Backup Bot me khush amdeed.\n\nFile bhejne ke liye pehle password bhejo, phir aap file upload kar sakte ho.`
             });
             continue;
           }
 
           state.attempts = (state.attempts || 0) + 1;
           if (state.attempts >= 5) {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `âš ï¸ 5 galat tries. Thodi der baad try karo.` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `5 dafa galat password. Thori der baad try karo (15 min).` });
             setTimeout(() => { state.attempts = 0; }, 15 * 60 * 1000);
           } else {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `ðŸ”’ Password galat hai. Dobara bhejo.` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Password galat hai. Dobara sahi password bhejo.` });
           }
           continue;
         }
 
-        // â”€â”€â”€ Logged in commands â”€â”€â”€
-        if (lower === 'help' || lower === '?') {
+        // â”€â”€â”€ Logged in commands â€” smart â”€â”€â”€
+        if (lower === 'help' || lower === '?' || lower.includes('madad') || lower.includes('help')) {
           await sendMessageSafe(primaryJid, fallbackJid, {
-            text: `*Help*\n\n1. File bhejo (image/PDF/video)\n2. Category number choose karo\n3. Upload ho jayega + link milega\n\nCommands:\n*help* â€” ye message\n*list* â€” vault link\n*logout* â€” logout`
+            text: `Help:\n1. File bhejo (image/PDF/video)\n2. Category number choose karo (1-5)\n3. Upload ho jayega + link milega\n\nCommands:\nhelp - ye message\nlist - vault link dekho\nlogout - bahar niklo`
           });
           continue;
         }
-        if (lower === 'list') {
-          await sendMessageSafe(primaryJid, fallbackJid, { text: `ðŸ“‚ Vault: ${VAULT_URL}\n\nCategories: ${DEFAULT_CATS.join(' Â· ')}` });
+        if (lower === 'list' || lower.includes('vault') || lower.includes('link')) {
+          await sendMessageSafe(primaryJid, fallbackJid, { text: `Vault: ${VAULT_URL}\nCategories: ${DEFAULT_CATS.join(' | ')}` });
           continue;
         }
-        if (lower === 'logout') {
+        if (lower === 'logout' || lower.includes('bahar') || lower.includes('exit')) {
           state.loggedIn = false;
-          await sendMessageSafe(primaryJid, fallbackJid, { text: `ðŸ‘‹ Logout ho gaya. Dobara login ke liye password bhejo.` });
+          await sendMessageSafe(primaryJid, fallbackJid, { text: `Logout ho gaya. Dobara login ke liye password bhejo.` });
           continue;
         }
 
@@ -429,14 +439,14 @@ async function startBot() {
           const catName = text.replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 30);
           if (catName && !DEFAULT_CATS.map(c => c.toLowerCase()).includes(catName.toLowerCase())) {
             try {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `â³ *${catName}* me save ho raha hai...` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${catName} me save ho raha hai...` });
               const out = await uploadToCloudinary(state.pendingFile.buffer, state.pendingFile.filename, catName);
               await sendMessageSafe(primaryJid, fallbackJid, {
-                text: `âœ… Done!\nðŸ“‚ Category: *${catName}*\nðŸ“„ ${state.pendingFile.filename}\nðŸ”— ${out.secure_url}\n\nVault: ${VAULT_URL}`
+                text: `Ho gaya!\nCategory: ${catName}\nFile: ${state.pendingFile.filename}\nLink: ${out.secure_url}\n\nVault: ${VAULT_URL}`
               });
               state.pendingFile = null;
             } catch (e) {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `âŒ Upload failed: ${e.message}` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` });
             }
             continue;
           }
@@ -457,17 +467,17 @@ async function startBot() {
 
           if (captionCat) {
             try {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `â³ *${captionCat}* me save ho raha hai...` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${captionCat} me save ho raha hai...` });
               const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
               let filename = msg.message.imageMessage?.caption?.split('\n')[0] || msg.message.documentMessage?.fileName || `file-${Date.now()}`;
               if (!filename.includes('.')) { if (isImage) filename += '.jpg'; else if (isDoc) filename += '.pdf'; else filename += '.bin'; }
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
               const out = await uploadToCloudinary(buffer, filename, captionCat);
               await sendMessageSafe(primaryJid, fallbackJid, {
-                text: `âœ… Done!\nðŸ“‚ Category: *${captionCat}*\nðŸ“„ ${filename}\nðŸ”— ${out.secure_url}\n\nVault: ${VAULT_URL}`
+                text: `Ho gaya!\nCategory: ${captionCat}\nFile: ${filename}\nLink: ${out.secure_url}\n\nVault: ${VAULT_URL}`
               });
             } catch (e) {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `âŒ Upload failed: ${e.message}` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` });
             }
           } else {
             try {
@@ -476,9 +486,9 @@ async function startBot() {
               if (!filename.includes('.') && isImage) filename += '.jpg';
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
               state.pendingFile = { buffer, filename };
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `ðŸ“Ž *${filename}* ready hai\n\n` + catMenu() });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `${filename} ready hai\n\n` + catMenu() });
             } catch (e) {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `âŒ File read failed: ${e.message}` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `File read failed: ${e.message}` });
             }
           }
           continue;
@@ -487,9 +497,14 @@ async function startBot() {
         // â”€â”€â”€ Plain text category name (without file) â”€â”€â”€
         const foundCat = DEFAULT_CATS.find(c => c.toLowerCase() === lower);
         if (foundCat) {
-          await sendMessageSafe(primaryJid, fallbackJid, { text: `ðŸ“‚ *${foundCat}* select hui. Ab is category me file bhejo.` });
+          await sendMessageSafe(primaryJid, fallbackJid, { text: `${foundCat} select hui. Ab is category me file bhejo.` });
           state.lastCat = foundCat;
           continue;
+        }
+
+        // Smart fallback â€” agar kuch samajh na aaye
+        if (lower.length > 2) {
+          await sendMessageSafe(primaryJid, fallbackJid, { text: `Samajh nahi aaya. File bhejo ya help likho.` });
         }
 
       } catch (err) {
@@ -497,7 +512,7 @@ async function startBot() {
         try {
           const rawJid = msg.key.remoteJidAlt || msg.key.remoteJid;
           const fb = msg.key.remoteJidAlt ? msg.key.remoteJid : null;
-          await sendMessageSafe(rawJid, fb, { text: `âŒ Error: ${err.message}` });
+          await sendMessageSafe(rawJid, fb, { text: `Error: ${err.message}` });
         } catch {}
       }
     }
