@@ -320,20 +320,22 @@ async function generateInvoiceExcelBuffer(inv) {
   try { await wb.xlsx.readFile(templatePath); } catch(e){ console.log('Template load fail', e.message); throw e; }
   let ws = wb.getWorksheet('Sales Invoice');
   if(!ws) ws = wb.worksheets[0];
-  // Exact overwrite - same file, same formatting, only values change (no clearing, no style change)
+  const lineTotal=(Number(inv.qty)||0)*(Number(inv.rate)||0)-(Number(inv.discount)||0);
+  // Exact overwrite - same file, same formatting, only values change
   try { ws.getCell('H6').value = inv.date; } catch {}
   try { ws.getCell('H7').value = String(inv.invoiceNo); } catch {}
   try { ws.getCell('F10').value = inv.client || 'Walk-in Client'; } catch {}
-  // First invoice row only - keep all template formulas and styles intact
   try { ws.getCell('B19').value = 1; } catch {}
   try { ws.getCell('C19').value = inv.brand || ''; } catch {}
   try { ws.getCell('D19').value = inv.description; } catch {}
   try { ws.getCell('E19').value = Number(inv.qty)||0; } catch {}
   try { ws.getCell('F19').value = Number(inv.rate)||0; } catch {}
   try { ws.getCell('G19').value = Number(inv.discount)||0; } catch {}
-  const lineTotal=(Number(inv.qty)||0)*(Number(inv.rate)||0)-(Number(inv.discount)||0);
+  // Force totals - template formulas may not recalc, so set explicitly
+  try { ws.getCell('H19').value = lineTotal; } catch {}
+  try { ws.getCell('H41').value = lineTotal; } catch {}
+  try { ws.getCell('H43').value = lineTotal; } catch {}
   try { ws.getCell('D44').value = numberToWords(lineTotal); } catch {}
-  // Let Excel formulas auto-calculate H19, H41, H43 - don't overwrite if formula exists
   const buf = await wb.xlsx.writeBuffer();
   return Buffer.from(buf);
 }
