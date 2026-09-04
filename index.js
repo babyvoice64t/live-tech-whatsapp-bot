@@ -176,7 +176,7 @@ async function uploadToCloudinary(buffer, filename, category) {
   // Use data URI so SDK handles signing correctly
   const base64 = buffer.toString('base64');
   const ext = filename.split('.').pop()?.toLowerCase() || 'bin';
-  const mimeMap = { jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', pdf:'application/pdf', mp4:'video/mp4', mov:'video/quicktime' };
+  const mimeMap = { jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', pdf:'application/pdf', mp4:'video/mp4', mov:'video/quicktime', xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', xls:'application/vnd.ms-excel', csv:'text/csv', docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document', doc:'application/msword', pptx:'application/vnd.openxmlformats-officedocument.presentationml.presentation', ppt:'application/vnd.ms-powerpoint', zip:'application/zip', txt:'text/plain' };
   const mime = mimeMap[ext] || 'application/octet-stream';
   const dataUri = `data:${mime};base64,${base64}`;
   try {
