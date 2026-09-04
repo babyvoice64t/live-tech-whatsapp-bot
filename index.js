@@ -241,6 +241,11 @@ function numberToWords(n) {
   function w(x){ if(x<20) return a[x]; if(x<100) return b[Math.floor(x/10)] + (x%10? ' '+a[x%10]:''); if(x<1000) return a[Math.floor(x/100)]+' Hundred'+(x%100? ' '+w(x%100):''); return w(Math.floor(x/1000))+' Thousand'+(x%1000? ' '+w(x%1000):''); }
   return w(num)+' Only';
 }
+// Invoice serial - last used, suggest next, allow manual
+let lastInvoiceNo = 7779;
+try { const v = fs.readFileSync(path.join(__dirname, 'last_invoice.txt'), 'utf8').trim(); const n = parseInt(v,10); if(!isNaN(n)) lastInvoiceNo = n; } catch {}
+function getNextInvoiceNo(){ return String(lastInvoiceNo + 1); }
+function setLastInvoiceNo(n){ const v=parseInt(n,10); if(!isNaN(v)){ lastInvoiceNo=v; try{ fs.writeFileSync(path.join(__dirname,'last_invoice.txt'), String(v)); }catch{} } }
 
 async function generateInvoicePdfBuffer(inv) {
   return new Promise((resolve, reject) => {
@@ -614,13 +619,21 @@ async function startBot() {
             else d=parseDateInput(text);
             if (!d) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Date samajh nahi aayi. Today likho ya DD-MM-YYYY me bhejo (jaise 04-09-2026)` }); continue; }
             inv.date=d; inv.step='invoiceNo';
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Date: ${d} save ho gayi.\nAb Invoice No bhejo (jaise 9265)` });
+            const next = getNextInvoiceNo();
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Date: ${d} save ho gayi.\nInvoice No ready hai: ${next} (last ${lastInvoiceNo} tha)\nYehi use karna hai to ${next} bhejo, ya apna number manually likho` });
             continue;
           }
           if (inv.step === 'invoiceNo') {
             if (!text || text.length<1) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice No khali nahi, dobara bhejo` }); continue; }
-            inv.invoiceNo=text.trim(); inv.step='client';
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice # ${inv.invoiceNo} save.\n${clientMenuText()}` });
+            const entered = text.trim();
+            // allow only numbers, but also allow manual
+            const num = entered.replace(/[^0-9]/g,'');
+            if(!num || num.length<1){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice No number me bhejo (jaise 7779)` }); continue; }
+            inv.invoiceNo=num;
+            // update serial from manual
+            setLastInvoiceNo(parseInt(num,10));
+            inv.step='client';
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice # ${inv.invoiceNo} save (serial ab ${num} se chalega).\n${clientMenuText()}` });
             continue;
           }
           if (inv.step === 'client') {
@@ -657,12 +670,12 @@ async function startBot() {
           }
           if (inv.step === 'brand') {
             inv.brand = (text.trim()==='-' ? '' : text.trim()); 
-            // Generate invoice now
+            // Generate invoice now - only Excel
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, aapka invoice ban raha hai...` });
             try {
               const lineTotal=(Number(inv.qty)||0)*(Number(inv.rate)||0);
               inv.discount='0'; inv.client=inv.client||'Walk-in Client';
-              // Excel - exact same file overwrite (single source of truth)
+              // Excel - exact same file overwrite (single source of truth) - no PDF
               const excelBuf=await generateInvoiceExcelBuffer(inv);
               let excelUrl='';
               try{
@@ -671,26 +684,8 @@ async function startBot() {
                 const out2=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}.xlsx`, use_filename:true, unique_filename:true, resource_type:'raw' });
                 excelUrl=out2.secure_url;
               }catch(e){ console.log('Excel gen fail',e.stack||e.message); throw e; }
-              // PDF - same Excel file se hi (exact design, 1-page center)
-              let pdfOut=null;
-              try{
-                const pdfBuf=await generatePdfFromExcelBuffer(excelBuf);
-                const b64=pdfBuf.toString('base64');
-                const dataUri=`data:application/pdf;base64,${b64}`;
-                const pdfName=`Invoice-${inv.invoiceNo}.pdf`;
-                pdfOut=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: pdfName.replace('.pdf',''), use_filename:true, unique_filename:true, resource_type:'auto' });
-              }catch(e){
-                console.log('PDF from Excel fail, fallback to template PDF', e.message);
-                const pdfBuf=await generateInvoicePdfBuffer(inv);
-                const b64=pdfBuf.toString('base64');
-                const dataUri=`data:application/pdf;base64,${b64}`;
-                const pdfName=`Invoice-${inv.invoiceNo}.pdf`;
-                pdfOut=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: pdfName.replace('.pdf',''), use_filename:true, unique_filename:true, resource_type:'auto' });
-              }
               state.invoice=null;
-              let msg=`Ho gaya! Invoice ban gaya.\nInvoice #: ${inv.invoiceNo}\nDate: ${inv.date}\nDescription: ${inv.description}\nQty: ${inv.qty} | Rate: ${inv.rate} | Brand: ${inv.brand||'-'}\nTotal: ${lineTotal.toFixed(2)}\n\nPDF: ${pdfOut.secure_url}`;
-              if(excelUrl) msg+=`\nExcel: ${excelUrl}`;
-              msg+=`\n\nVault: ${VAULT_URL}`;
+              let msg=`Ho gaya! Invoice ban gaya.\nInvoice #: ${inv.invoiceNo}\nDate: ${inv.date}\nDescription: ${inv.description}\nQty: ${inv.qty} | Rate: ${inv.rate} | Brand: ${inv.brand||'-'}\nTotal: ${lineTotal.toFixed(2)}\n\nExcel: ${excelUrl}\n\nVault: ${VAULT_URL}`;
               await sendMessageSafe(primaryJid, fallbackJid, { text: msg });
               await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
             } catch(e){
