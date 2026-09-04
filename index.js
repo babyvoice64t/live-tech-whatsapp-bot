@@ -246,6 +246,17 @@ let lastInvoiceNo = 7779;
 try { const v = fs.readFileSync(path.join(__dirname, 'last_invoice.txt'), 'utf8').trim(); const n = parseInt(v,10); if(!isNaN(n)) lastInvoiceNo = n; } catch {}
 function getNextInvoiceNo(){ return String(lastInvoiceNo + 1); }
 function setLastInvoiceNo(n){ const v=parseInt(n,10); if(!isNaN(v)){ lastInvoiceNo=v; try{ fs.writeFileSync(path.join(__dirname,'last_invoice.txt'), String(v)); }catch{} } }
+function getStepPrompt(step, inv){
+  if(step==='date') return `Date bhejo - Today likho ya DD-MM-YYYY (jaise 04-09-2026). Back ke liye 'back' likho`;
+  if(step==='invoiceNo'){ const nxt=getNextInvoiceNo(); return `Invoice No ready hai: ${nxt} (last ${lastInvoiceNo}). Yehi use karna hai to ${nxt} bhejo, ya manual No likho. Back: back`; }
+  if(step==='client') return clientMenuText() + `\n\nBack: back`;
+  if(step==='description') return `Description bhejo (kaam ka naam). Back: back`;
+  if(step==='qty') return `Qty bhejo (number, jaise 2). Back: back`;
+  if(step==='rate') return `Rate / Unit Price bhejo (jaise 12000). Back: back`;
+  if(step==='brand') return `Brand bhejo (optional, skip ke liye - bhejo). Back: back`;
+  if(step==='askMore') return `Item ${inv.items?.length||1} save ho gaya.\nAur item add karna hai?\n1. Haan, aur item\n2. Nahi, invoice generate karo\n\nBack: back`;
+  return '';
+}
 
 async function generateInvoicePdfBuffer(inv) {
   return new Promise((resolve, reject) => {
@@ -325,9 +336,10 @@ async function generateInvoicePdfBuffer(inv) {
 }
 async function generateInvoiceExcelBuffer(inv) {
   // Try Python openpyxl (exact, preserves VBA/tables better) first, fallback to ExcelJS
-  const lineTotal=(Number(inv.qty)||0)*(Number(inv.rate)||0)-(Number(inv.discount)||0);
-  const words=numberToWords(lineTotal);
-  const data={ date: inv.date, invoiceNo: String(inv.invoiceNo), client: inv.client||'Walk-in Client', description: inv.description, qty: String(inv.qty), rate: String(inv.rate), brand: inv.brand||'', words };
+  const hasMulti = inv.items && inv.items.length>0;
+  const subtotal = hasMulti ? inv.items.reduce((s,it)=> s + (Number(it.qty)||0)*(Number(it.rate)||0), 0) : (Number(inv.qty)||0)*(Number(inv.rate)||0);
+  const words=numberToWords(subtotal);
+  const data={ date: inv.date, invoiceNo: String(inv.invoiceNo), client: inv.client||'Walk-in Client', words, items: hasMulti ? inv.items : [{brand: inv.brand||'', description: inv.description, qty: inv.qty, rate: inv.rate, disc: 0}] };
   const templatePath = path.join(__dirname, 'template.xlsm');
   const tmpOut = path.join(os.tmpdir(), `inv_${Date.now()}_${inv.invoiceNo}.xlsx`);
   // Try python3 first (Linux), then python (Windows), then py
@@ -345,9 +357,8 @@ async function generateInvoiceExcelBuffer(inv) {
       console.log(`Python ${py} failed`, e.message?.slice(0,200));
     }
   }
-  // All python attempts failed -> fallback ExcelJS
+  // All python attempts failed -> fallback ExcelJS (multi)
   console.log('Python fill failed, fallback ExcelJS', lastErr?.message);
-  // Fallback ExcelJS
   const wb = new ExcelJS.Workbook();
   await wb.xlsx.readFile(templatePath);
   const keep='Sales Invoice'; wb.worksheets.slice().forEach(s=>{ if(s.name!==keep) try{ wb.removeWorksheet(s.id);}catch{} });
@@ -356,10 +367,31 @@ async function generateInvoiceExcelBuffer(inv) {
   try{ ws.model.media=[];}catch{} try{ if(wb.model&&wb.model.media) wb.model.media=[];}catch{}
   try{ ws.auto_filter=null;}catch{} try{ ws.autoFilter=null;}catch{}
   try{ if(ws.model&&ws.model.tables) ws.model.tables=[];}catch{} try{ if(ws._tables) ws._tables=[];}catch{} try{ if(ws.tables) ws.tables=[];}catch{}
-  try{ for(let r=20;r<=38;r++){ ws.getRow(r).hidden=r>19; if(r>19) ws.getRow(r).height=0; } ws.pageSetup.printArea='A1:H44'; }catch{}
+  // header style
+  try{
+    const hdrFill={ type:'pattern', pattern:'solid', fgColor:{argb:'FF0F172A'} };
+    const hdrFont={ name:'Century Gothic', size:11, bold:true, color:{argb:'FFFFFFFF'} };
+    for(const col of ['B','C','D','E','F','G','H']){
+      const c=ws.getCell(col+'18'); c.fill=hdrFill; c.font=hdrFont; c.alignment={horizontal:'center', vertical:'middle'};
+    }
+    ws.getRow(18).height=18;
+  }catch{}
   ws.getCell('H6').value=inv.date; ws.getCell('H7').value=String(inv.invoiceNo); ws.getCell('F10').value=inv.client||'Walk-in Client';
-  ws.getCell('B19').value=1; ws.getCell('C19').value=inv.brand||''; ws.getCell('D19').value=inv.description; ws.getCell('E19').value=Number(inv.qty)||0; ws.getCell('F19').value=Number(inv.rate)||0; ws.getCell('G19').value=0;
-  ws.getCell('H19').value=lineTotal; ws.getCell('H41').value=lineTotal; ws.getCell('H43').value=lineTotal; ws.getCell('D44').value=words;
+  const fItems = hasMulti ? inv.items : [{brand: inv.brand||'', description: inv.description, qty: inv.qty, rate: inv.rate, disc:0}];
+  const sub = fItems.reduce((s,it)=> s + (Number(it.qty)||0)*(Number(it.rate)||0), 0);
+  fItems.forEach((it,i)=>{
+    const r=19+i;
+    const isBlue = (i%2===1);
+    const fill = isBlue ? { type:'pattern', pattern:'solid', fgColor:{argb:'FFD5E0EA'} } : { type:'pattern', pattern:'solid', fgColor:{argb:'FFFFFFFF'} };
+    ws.getCell(`B${r}`).value=i+1; ws.getCell(`C${r}`).value=it.brand||''; ws.getCell(`D${r}`).value=it.description; ws.getCell(`E${r}`).value=Number(it.qty)||0; ws.getCell(`F${r}`).value=Number(it.rate)||0; ws.getCell(`G${r}`).value=0; ws.getCell(`H${r}`).value=(Number(it.qty)||0)*(Number(it.rate)||0);
+    ws.getRow(r).hidden=false; ws.getRow(r).height=16;
+    for(const col of ['B','C','D','E','F','G','H']){
+      const c=ws.getCell(col+r); c.fill=fill; c.font={ name:'Century Gothic', size:12, color:{argb:'FF0F172A'} }; c.alignment={ horizontal: (['B','E','F','G','H'].includes(col)?'center':'left'), vertical:'middle' };
+    }
+  });
+  for(let r=19+fItems.length;r<=38;r++){ ws.getRow(r).hidden=true; ws.getRow(r).height=0; for(const col of ['B','C','D','E','F','G','H']) ws.getCell(col+r).value=null; }
+  ws.getCell('H41').value=sub; ws.getCell('H43').value=sub; ws.getCell('D44').value=words;
+  try{ ws.getCell('H41').fill={ type:'pattern', pattern:'solid', fgColor:{argb:'FFD5E0EA'} }; ws.getCell('H43').fill={ type:'pattern', pattern:'solid', fgColor:{argb:'FFD5E0EA'} }; }catch{}
   try{ ws.pageSetup={ paperSize:9, orientation:'portrait', fitToPage:true, fitToWidth:1, fitToHeight:1, horizontalCentered:true, printArea:'A1:H44', margins:{left:0.25,right:0.25,top:0.3,bottom:0.3}}; }catch{}
   const outBuf=await wb.xlsx.writeBuffer(); return Buffer.from(outBuf);
 }
@@ -611,8 +643,26 @@ async function startBot() {
 
         // ─── Invoice flow — handle if active ───
         if (state.invoice) {
-          if (lower==='cancel' || lower==='menu' || lower==='exit') { state.invoice=null; await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice cancel ho gaya.\n\n${mainMenuText()}` }); continue; }
           const inv = state.invoice;
+          const isBack = ['back','piche','peeche','wapas','previous','b'].includes(lower);
+          if (isBack) {
+            const order = ['date','invoiceNo','client','description','qty','rate','brand','askMore'];
+            const idx = order.indexOf(inv.step);
+            if(idx>0){
+              if(inv.step==='askMore' && inv.items && inv.items.length>0){
+                const last = inv.items.pop();
+                inv.description = last.description; inv.qty = String(last.qty); inv.rate = String(last.rate); inv.brand = last.brand;
+              }
+              inv.step = order[idx-1];
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Piche chale gaye.\n` + getStepPrompt(inv.step, inv) });
+            } else {
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Pehle se hi pehle step pe ho.` });
+            }
+            continue;
+          }
+          if (lower==='cancel' || lower==='menu' || lower==='exit') { state.invoice=null; await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice cancel ho gaya.\n\n${mainMenuText()}` }); continue; }
+          // ensure items array
+          if(!inv.items) inv.items=[];
           if (inv.step === 'date') {
             let d=null;
             if (lower==='today' || lower==='aaj') d=formatDateDDMMYYYY(new Date());
@@ -626,11 +676,9 @@ async function startBot() {
           if (inv.step === 'invoiceNo') {
             if (!text || text.length<1) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice No khali nahi, dobara bhejo` }); continue; }
             const entered = text.trim();
-            // allow only numbers, but also allow manual
             const num = entered.replace(/[^0-9]/g,'');
             if(!num || num.length<1){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice No number me bhejo (jaise 7779)` }); continue; }
             inv.invoiceNo=num;
-            // update serial from manual
             setLastInvoiceNo(parseInt(num,10));
             inv.step='client';
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice # ${inv.invoiceNo} save (serial ab ${num} se chalega).\n${clientMenuText()}` });
@@ -647,52 +695,74 @@ async function startBot() {
               if(clientName.length<2){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Client naam chhota hai, dobara bhejo` }); continue; }
             }
             inv.client=clientName; inv.step='description';
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Client: ${clientName} save.\nAb Description bhejo (kaam ka naam)` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Client: ${clientName} save.\nAb Description bhejo (kaam ka naam) - back ke liye 'back' likho` });
             continue;
           }
           if (inv.step === 'description') {
             if (!text || text.length<2) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Description chhota hai, dobara bhejo` }); continue; }
             inv.description=text.trim(); inv.step='qty';
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Description save.\nAb Qty bhejo (number, jaise 1 ya 5)` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Description save.\nAb Qty bhejo (number, jaise 1 ya 5) - back: back` });
             continue;
           }
           if (inv.step === 'qty') {
             const q=parseFloat(text); if(isNaN(q)||q<=0){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Qty number me bhejo, jaise 2` }); continue; }
             inv.qty=String(q); inv.step='rate';
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Qty ${q} save.\nAb Rate / Unit Price bhejo (jaise 5000)` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Qty ${q} save.\nAb Rate / Unit Price bhejo (jaise 5000) - back: back` });
             continue;
           }
           if (inv.step === 'rate') {
             const r=parseFloat(text); if(isNaN(r)||r<0){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Rate number me bhejo` }); continue; }
             inv.rate=String(r); inv.step='brand';
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Rate ${r} save.\nAb Brand bhejo (optional hai, skip ke liye - bhejo)` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Rate ${r} save.\nAb Brand bhejo (optional hai, skip ke liye - bhejo) - back: back` });
             continue;
           }
           if (inv.step === 'brand') {
             inv.brand = (text.trim()==='-' ? '' : text.trim()); 
-            // Generate invoice now - only Excel
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, aapka invoice ban raha hai...` });
-            try {
-              const lineTotal=(Number(inv.qty)||0)*(Number(inv.rate)||0);
-              inv.discount='0'; inv.client=inv.client||'Walk-in Client';
-              // Excel - exact same file overwrite (single source of truth) - no PDF
-              const excelBuf=await generateInvoiceExcelBuffer(inv);
-              let excelUrl='';
-              try{
-                const b64=excelBuf.toString('base64');
-                const dataUri=`data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${b64}`;
-                const out2=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}.xlsx`, use_filename:true, unique_filename:true, resource_type:'raw' });
-                excelUrl=out2.secure_url;
-              }catch(e){ console.log('Excel gen fail',e.stack||e.message); throw e; }
-              state.invoice=null;
-              let msg=`Ho gaya! Invoice ban gaya.\nInvoice #: ${inv.invoiceNo}\nDate: ${inv.date}\nDescription: ${inv.description}\nQty: ${inv.qty} | Rate: ${inv.rate} | Brand: ${inv.brand||'-'}\nTotal: ${lineTotal.toFixed(2)}\n\nExcel: ${excelUrl}\n\nVault: ${VAULT_URL}`;
-              await sendMessageSafe(primaryJid, fallbackJid, { text: msg });
-              await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
-            } catch(e){
-              state.invoice=null;
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice banane me error: ${e.message}` });
-              await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
+            // push current item to items
+            if(!inv.items) inv.items=[];
+            inv.items.push({ brand: inv.brand, description: inv.description, qty: inv.qty, rate: inv.rate, disc: 0 });
+            // clear temp for next item
+            inv.description=''; inv.qty=''; inv.rate=''; inv.brand='';
+            inv.step='askMore';
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Item ${inv.items.length} save ho gaya: ${inv.items[inv.items.length-1].description} | Qty ${inv.items[inv.items.length-1].qty} | Rate ${inv.items[inv.items.length-1].rate}\n\nAur item add karna hai?\n1. Haan, aur item\n2. Nahi, invoice generate karo\n\nBack: back (pichla item edit)` });
+            continue;
+          }
+          if (inv.step === 'askMore') {
+            if(lower==='1' || lower==='haan' || lower==='yes' || lower==='han'){
+              inv.step='description';
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Next item:\nDescription bhejo (kaam ka naam) - back: back` });
+              continue;
             }
+            if(lower==='2' || lower==='nahi' || lower==='no' || lower==='generate' || lower==='n'){
+              // Generate invoice now - multi items, only Excel
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, aapka invoice ban raha hai...` });
+              try {
+                const subtotal = inv.items.reduce((s,it)=> s + (Number(it.qty)||0)*(Number(it.rate)||0), 0);
+                inv.discount='0'; inv.client=inv.client||'Walk-in Client';
+                // prepare inv for excel - pass items
+                const excelBuf=await generateInvoiceExcelBuffer({...inv, items: inv.items});
+                let excelUrl='';
+                try{
+                  const b64=excelBuf.toString('base64');
+                  const dataUri=`data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${b64}`;
+                  const out2=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}.xlsx`, use_filename:true, unique_filename:true, resource_type:'raw' });
+                  excelUrl=out2.secure_url;
+                }catch(e){ console.log('Excel gen fail',e.stack||e.message); throw e; }
+                const total = subtotal;
+                let msg=`Ho gaya! Invoice ban gaya.\nInvoice #: ${inv.invoiceNo}\nDate: ${inv.date}\nClient: ${inv.client}\nItems: ${inv.items.length}\n`;
+                inv.items.forEach((it,i)=>{ msg+=`${i+1}. ${it.description} | ${it.qty} x ${it.rate} = ${(Number(it.qty)*Number(it.rate)).toFixed(2)}${it.brand?' | '+it.brand:''}\n`; });
+                msg+=`Total: ${total.toFixed(2)}\n\nExcel: ${excelUrl}\n\nVault: ${VAULT_URL}`;
+                state.invoice=null;
+                await sendMessageSafe(primaryJid, fallbackJid, { text: msg });
+                await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
+              } catch(e){
+                state.invoice=null;
+                await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice banane me error: ${e.message}` });
+                await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
+              }
+              continue;
+            }
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `1 bhejo (aur item) ya 2 bhejo (generate). Back: back` });
             continue;
           }
         }
@@ -705,7 +775,7 @@ async function startBot() {
             continue;
           }
           if (lower==='2' || lower.includes('invoice')) {
-            state.mode='invoice'; state.invoice={step:'date', date:'', invoiceNo:'', client:'', description:'', qty:'', rate:'', brand:'', discount:'0'};
+            state.mode='invoice'; state.invoice={step:'date', date:'', invoiceNo:'', client:'', description:'', qty:'', rate:'', brand:'', discount:'0', items:[]};
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice banana shuru.\nDate bhejo - Today likho ya custom date (DD-MM-YYYY) bhejo` });
             continue;
           }
