@@ -21,10 +21,21 @@ try:
     ws.auto_filter = None
 except:
     pass
+# Clear tables correctly (openpyxl _tables is dict-like)
 try:
-    # openpyxl stores tables in ws._tables
     if hasattr(ws, '_tables'):
-        ws._tables = []
+        try:
+            ws._tables.clear()
+        except:
+            ws._tables = {}
+except:
+    pass
+try:
+    if hasattr(ws, 'tables'):
+        try:
+            ws.tables.clear()
+        except:
+            pass
 except:
     pass
 # Hide extra rows 20-38

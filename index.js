@@ -325,29 +325,38 @@ async function generateInvoiceExcelBuffer(inv) {
   const data={ date: inv.date, invoiceNo: String(inv.invoiceNo), client: inv.client||'Walk-in Client', description: inv.description, qty: String(inv.qty), rate: String(inv.rate), brand: inv.brand||'', words };
   const templatePath = path.join(__dirname, 'template.xlsm');
   const tmpOut = path.join(os.tmpdir(), `inv_${Date.now()}_${inv.invoiceNo}.xlsx`);
-  try {
-    await execAsync(`python "${path.join(__dirname, 'fill_excel.py')}" "${templatePath}" "${tmpOut}" '${JSON.stringify(data).replace(/'/g, "\\'")}'`);
-    const buf = await fs.promises.readFile(tmpOut);
-    await fs.promises.unlink(tmpOut).catch(()=>{});
-    return buf;
-  } catch(e) {
-    console.log('Python fill failed, fallback ExcelJS', e.message);
-    // Fallback ExcelJS
-    const wb = new ExcelJS.Workbook();
-    await wb.xlsx.readFile(templatePath);
-    const keep='Sales Invoice'; wb.worksheets.slice().forEach(s=>{ if(s.name!==keep) try{ wb.removeWorksheet(s.id);}catch{} });
-    let ws=wb.getWorksheet(keep)||wb.worksheets[0];
-    try{ ws.getImages().forEach(img=> ws.removeImage(img.imageId)); }catch{}
-    try{ ws.model.media=[];}catch{} try{ if(wb.model&&wb.model.media) wb.model.media=[];}catch{}
-    try{ ws.auto_filter=null;}catch{} try{ ws.autoFilter=null;}catch{}
-    try{ if(ws.model&&ws.model.tables) ws.model.tables=[];}catch{} try{ if(ws._tables) ws._tables=[];}catch{} try{ if(ws.tables) ws.tables=[];}catch{}
-    try{ for(let r=20;r<=38;r++){ ws.getRow(r).hidden=r>19; if(r>19) ws.getRow(r).height=0; } ws.pageSetup.printArea='A1:H44'; }catch{}
-    ws.getCell('H6').value=inv.date; ws.getCell('H7').value=String(inv.invoiceNo); ws.getCell('F10').value=inv.client||'Walk-in Client';
-    ws.getCell('B19').value=1; ws.getCell('C19').value=inv.brand||''; ws.getCell('D19').value=inv.description; ws.getCell('E19').value=Number(inv.qty)||0; ws.getCell('F19').value=Number(inv.rate)||0; ws.getCell('G19').value=0;
-    ws.getCell('H19').value=lineTotal; ws.getCell('H41').value=lineTotal; ws.getCell('H43').value=lineTotal; ws.getCell('D44').value=words;
-    try{ ws.pageSetup={ paperSize:9, orientation:'portrait', fitToPage:true, fitToWidth:1, fitToHeight:1, horizontalCentered:true, printArea:'A1:H60', margins:{left:0.25,right:0.25,top:0.3,bottom:0.3}}; }catch{}
-    const buf=await wb.xlsx.writeBuffer(); return Buffer.from(buf);
+  // Try python3 first (Linux), then python (Windows), then py
+  let buf=null;
+  let lastErr=null;
+  for(const py of ['python3','python','py']){
+    try {
+      await execAsync(`${py} "${path.join(__dirname, 'fill_excel.py')}" "${templatePath}" "${tmpOut}" '${JSON.stringify(data).replace(/'/g, "\\'")}'`);
+      buf = await fs.promises.readFile(tmpOut);
+      await fs.promises.unlink(tmpOut).catch(()=>{});
+      console.log(`Excel via ${py} ok`, buf.length);
+      return buf;
+    } catch(e) {
+      lastErr=e;
+      console.log(`Python ${py} failed`, e.message?.slice(0,200));
+    }
   }
+  // All python attempts failed -> fallback ExcelJS
+  console.log('Python fill failed, fallback ExcelJS', lastErr?.message);
+  // Fallback ExcelJS
+  const wb = new ExcelJS.Workbook();
+  await wb.xlsx.readFile(templatePath);
+  const keep='Sales Invoice'; wb.worksheets.slice().forEach(s=>{ if(s.name!==keep) try{ wb.removeWorksheet(s.id);}catch{} });
+  let ws=wb.getWorksheet(keep)||wb.worksheets[0];
+  try{ ws.getImages().forEach(img=> ws.removeImage(img.imageId)); }catch{}
+  try{ ws.model.media=[];}catch{} try{ if(wb.model&&wb.model.media) wb.model.media=[];}catch{}
+  try{ ws.auto_filter=null;}catch{} try{ ws.autoFilter=null;}catch{}
+  try{ if(ws.model&&ws.model.tables) ws.model.tables=[];}catch{} try{ if(ws._tables) ws._tables=[];}catch{} try{ if(ws.tables) ws.tables=[];}catch{}
+  try{ for(let r=20;r<=38;r++){ ws.getRow(r).hidden=r>19; if(r>19) ws.getRow(r).height=0; } ws.pageSetup.printArea='A1:H44'; }catch{}
+  ws.getCell('H6').value=inv.date; ws.getCell('H7').value=String(inv.invoiceNo); ws.getCell('F10').value=inv.client||'Walk-in Client';
+  ws.getCell('B19').value=1; ws.getCell('C19').value=inv.brand||''; ws.getCell('D19').value=inv.description; ws.getCell('E19').value=Number(inv.qty)||0; ws.getCell('F19').value=Number(inv.rate)||0; ws.getCell('G19').value=0;
+  ws.getCell('H19').value=lineTotal; ws.getCell('H41').value=lineTotal; ws.getCell('H43').value=lineTotal; ws.getCell('D44').value=words;
+  try{ ws.pageSetup={ paperSize:9, orientation:'portrait', fitToPage:true, fitToWidth:1, fitToHeight:1, horizontalCentered:true, printArea:'A1:H44', margins:{left:0.25,right:0.25,top:0.3,bottom:0.3}}; }catch{}
+  const outBuf=await wb.xlsx.writeBuffer(); return Buffer.from(outBuf);
 }
 async function generatePdfFromExcelBuffer(excelBuf) {
   // Try LibreOffice headless conversion (exact Excel print to PDF) - same file

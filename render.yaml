@@ -3,7 +3,7 @@ services:
     name: live-tech-whatsapp-bot
     env: node
     plan: free
-    buildCommand: npm install
+    buildCommand: pip install -r requirements.txt && npm install
     startCommand: npm start
     envVars:
       - key: CLOUDINARY_CLOUD_NAME
