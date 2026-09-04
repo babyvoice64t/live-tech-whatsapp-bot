@@ -623,17 +623,15 @@ async function startBot() {
                   res(out);
                 }catch(e){ rej(e); }
               });
-              // Also Excel via template - exact same design
+              // Also Excel via template - exact same design (same file overwrite)
               let excelUrl='';
               try{
                 const excelBuf=await generateInvoiceExcelBuffer(inv);
                 const b64=excelBuf.toString('base64');
                 const dataUri=`data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${b64}`;
-                const out2=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}`, use_filename:true, unique_filename:true, resource_type:'raw' });
+                const out2=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}.xlsx`, use_filename:true, unique_filename:true, resource_type:'raw' });
                 excelUrl=out2.secure_url;
-                // ensure .xlsx extension visible
-                if(!excelUrl.endsWith('.xlsx')) excelUrl=excelUrl+'.xlsx';
-              }catch(e){ console.log('Excel gen fail',e.message); }
+              }catch(e){ console.log('Excel gen fail',e.stack||e.message); excelUrl=`Error: ${e.message}`; }
               state.invoice=null;
               let msg=`Ho gaya! Invoice ban gaya.\nInvoice #: ${inv.invoiceNo}\nDate: ${inv.date}\nDescription: ${inv.description}\nQty: ${inv.qty} | Rate: ${inv.rate} | Brand: ${inv.brand||'-'}\nTotal: ${lineTotal.toFixed(2)}\n\nPDF: ${pdfOut.secure_url}`;
               if(excelUrl) msg+=`\nExcel: ${excelUrl}`;
