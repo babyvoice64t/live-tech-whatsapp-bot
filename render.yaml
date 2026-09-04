@@ -3,7 +3,7 @@ services:
     name: live-tech-whatsapp-bot
     env: node
     plan: free
-    buildCommand: pip install -r requirements.txt && npm install
+    buildCommand: pip install -r requirements.txt && npm install && apt-get update -qq && apt-get install -y -qq libreoffice > /dev/null 2>&1 || echo "libreoffice install skipped"
     startCommand: npm start
     envVars:
       - key: CLOUDINARY_CLOUD_NAME

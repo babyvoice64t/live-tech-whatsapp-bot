@@ -1,4 +1,5 @@
 import openpyxl, sys, json
+from openpyxl.styles import PatternFill, Font, Alignment, Border, Side
 # Usage: python fill_excel.py template.xlsm out.xlsx '{"date":"04-09-2026","invoiceNo":"9999","client":"Test","description":"Desc","qty":"1","rate":"100","brand":"B","words":"One Only"}'
 tpl = sys.argv[1]
 out = sys.argv[2]
@@ -50,6 +51,22 @@ try:
     ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.horizontalCentered = True
     ws.page_setup.paperSize = ws.PAPERSIZE_A4
+except:
+    pass
+# Re-apply header style for B18:H18 (lost when tables removed) - dark header white text
+try:
+    hdr_fill = PatternFill(start_color="0F172A", end_color="0F172A", fill_type="solid")
+    hdr_font = Font(name="Century Gothic", size=11, bold=True, color="FFFFFF")
+    hdr_align = Alignment(horizontal="center", vertical="center")
+    thin = Side(style="thin", color="E2E8F0")
+    hdr_border = Border(left=thin, right=thin, top=thin, bottom=thin)
+    for col in ['B','C','D','E','F','G','H']:
+        c = ws[col+'18']
+        c.fill = hdr_fill
+        c.font = hdr_font
+        c.alignment = hdr_align
+        c.border = hdr_border
+    ws.row_dimensions[18].height = 18
 except:
     pass
 # Fill
