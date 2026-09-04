@@ -359,11 +359,23 @@ async function generateInvoiceExcelBuffer(inv) {
   const outBuf=await wb.xlsx.writeBuffer(); return Buffer.from(outBuf);
 }
 async function generatePdfFromExcelBuffer(excelBuf) {
-  // Try LibreOffice headless conversion (exact Excel print to PDF) - same file
+  // Same Excel file se hi PDF - Python reportlab (exact data, 1-page), fallback to soffice, then pdfkit
   const tmpDir = os.tmpdir();
   const xlsxPath = path.join(tmpDir, `inv_${Date.now()}.xlsx`);
   const pdfPath = xlsxPath.replace('.xlsx', '.pdf');
   await fs.promises.writeFile(xlsxPath, excelBuf);
+  // 1) Try Python excel_to_pdf.py (reportlab, same Excel data, no new template)
+  for(const py of ['python3','python','py']){
+    try{
+      await execAsync(`${py} "${path.join(__dirname, 'excel_to_pdf.py')}" "${xlsxPath}" "${pdfPath}"`);
+      const pdfBuf = await fs.promises.readFile(pdfPath);
+      await fs.promises.unlink(xlsxPath).catch(()=>{});
+      await fs.promises.unlink(pdfPath).catch(()=>{});
+      console.log(`PDF via ${py} excel_to_pdf ok`, pdfBuf.length);
+      return pdfBuf;
+    }catch(e){ console.log(`excel_to_pdf via ${py} fail`, e.message?.slice(0,200)); }
+  }
+  // 2) Try LibreOffice
   try {
     await execAsync(`soffice --headless --convert-to pdf --outdir "${tmpDir}" "${xlsxPath}"`);
     const pdfBuf = await fs.promises.readFile(pdfPath);
