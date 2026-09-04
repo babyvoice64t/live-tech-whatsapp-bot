@@ -3,7 +3,7 @@ import openpyxl, sys, json
 tpl = sys.argv[1]
 out = sys.argv[2]
 data = json.loads(sys.argv[3])
-wb = openpyxl.load_workbook(tpl, keep_vba=True)
+wb = openpyxl.load_workbook(tpl, keep_vba=False)
 # Keep only Sales Invoice
 keep='Sales Invoice'
 for name in list(wb.sheetnames):
@@ -80,5 +80,10 @@ try: ws['H43'] = lineTotal
 except: pass
 try: ws['D44'] = data.get('words','')
 except: pass
+# Ensure no VBA for xlsx
+try:
+    wb.vba_archive = None
+except:
+    pass
 wb.save(out)
 print('saved')
