@@ -318,10 +318,15 @@ async function generateInvoiceExcelBuffer(inv) {
   const templatePath = path.join(__dirname, 'template.xlsm');
   const wb = new ExcelJS.Workbook();
   try { await wb.xlsx.readFile(templatePath); } catch(e){ console.log('Template load fail', e.message); throw e; }
-  let ws = wb.getWorksheet('Sales Invoice');
-  if(!ws) ws = wb.worksheets[0];
+  // Keep only Sales Invoice sheet, remove others
+  const keep = 'Sales Invoice';
+  wb.worksheets.slice().forEach(s=>{ if(s.name!==keep) try{ wb.removeWorksheet(s.id); }catch{} });
+  let ws = wb.getWorksheet(keep) || wb.worksheets[0];
+  // Remove 2 logos on right side (images)
+  try { ws.getImages().forEach(img=> ws.removeImage(img.imageId)); } catch {}
+  // Also clear images via model
+  try { ws.model.media = []; } catch {}
   const lineTotal=(Number(inv.qty)||0)*(Number(inv.rate)||0)-(Number(inv.discount)||0);
-  // Exact overwrite - same file, same formatting, only values change
   try { ws.getCell('H6').value = inv.date; } catch {}
   try { ws.getCell('H7').value = String(inv.invoiceNo); } catch {}
   try { ws.getCell('F10').value = inv.client || 'Walk-in Client'; } catch {}
@@ -331,11 +336,15 @@ async function generateInvoiceExcelBuffer(inv) {
   try { ws.getCell('E19').value = Number(inv.qty)||0; } catch {}
   try { ws.getCell('F19').value = Number(inv.rate)||0; } catch {}
   try { ws.getCell('G19').value = Number(inv.discount)||0; } catch {}
-  // Force totals - template formulas may not recalc, so set explicitly
   try { ws.getCell('H19').value = lineTotal; } catch {}
   try { ws.getCell('H41').value = lineTotal; } catch {}
   try { ws.getCell('H43').value = lineTotal; } catch {}
   try { ws.getCell('D44').value = numberToWords(lineTotal); } catch {}
+  // Print setup - 1 page, center, exact as template
+  try {
+    ws.pageSetup = { paperSize: 9, orientation: 'portrait', fitToPage: true, fitToWidth: 1, fitToHeight: 1, horizontalCentered: true, verticalCentered: false, printArea: 'A1:H60', margins: { left: 0.25, right: 0.25, top: 0.3, bottom: 0.3, header: 0.2, footer: 0.2 } };
+    ws.properties.pageSetUpPr = { fitToPage: true };
+  } catch {}
   const buf = await wb.xlsx.writeBuffer();
   return Buffer.from(buf);
 }
