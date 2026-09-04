@@ -55,6 +55,14 @@ const messageStore = new Map();
 const userState = new Map();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const DEFAULT_CATS = ['Transaction', 'Purchase Order', 'Invoice', 'Important'];
+const CLIENTS = ['Abdul Rehman Garments','Arif Habib Corporation','Arif Habib Limitd','Arif Habib Limited','BDO','BDO Pakistan','Blue Light Computers','CASH','FESF','Habib Public','Habib Public School','Harmain Jewellers','Harmain Jewelllers','Harmain Jweler','MSN','Maple Pharmaceuticals','Maple pharma','Mega Textiles','Mr.Naseem Baig','Mr.Taha','NCCPL','NRT','NoorulQuran madrsa','Murtaza Jaffrani','S.Ejazuddin & Co.','S.Ejazuddin and Co.','S.Ejazudin & Co.','SSFR','SSFR (PVT) LTD.','SSFR PVT LTD','SSFR PVT. LTD.','Sana Safinaz','Shajar Capital','Meezan Bank','TAJ CORPORATION','Virtuesoft'];
+
+function clientMenuText() {
+  let lines=['Client select karo:\n'];
+  CLIENTS.forEach((c,i)=> lines.push(`${i+1}. ${c}`));
+  lines.push(`\nNumber bhejo (1-${CLIENTS.length}) ya naya client naam likho`);
+  return lines.join('\n');
+}
 
 function msgKeyId(key) { return `${key.remoteJid}:${key.id}`; }
 
@@ -561,8 +569,22 @@ async function startBot() {
           }
           if (inv.step === 'invoiceNo') {
             if (!text || text.length<1) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice No khali nahi, dobara bhejo` }); continue; }
-            inv.invoiceNo=text.trim(); inv.step='description';
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice # ${inv.invoiceNo} save.\nAb Description bhejo (kaam ka naam)` });
+            inv.invoiceNo=text.trim(); inv.step='client';
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice # ${inv.invoiceNo} save.\n${clientMenuText()}` });
+            continue;
+          }
+          if (inv.step === 'client') {
+            let clientName='';
+            if (/^\d+$/.test(text)) {
+              const n=parseInt(text);
+              if(n>=1 && n<=CLIENTS.length) clientName=CLIENTS[n-1];
+              else { await sendMessageSafe(primaryJid, fallbackJid, { text: `Galat number. 1-${CLIENTS.length} bhejo ya naya naam likho` }); continue; }
+            } else {
+              clientName=text.trim().slice(0,60);
+              if(clientName.length<2){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Client naam chhota hai, dobara bhejo` }); continue; }
+            }
+            inv.client=clientName; inv.step='description';
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Client: ${clientName} save.\nAb Description bhejo (kaam ka naam)` });
             continue;
           }
           if (inv.step === 'description') {
@@ -635,7 +657,7 @@ async function startBot() {
             continue;
           }
           if (lower==='2' || lower.includes('invoice')) {
-            state.mode='invoice'; state.invoice={step:'date', date:'', invoiceNo:'', description:'', qty:'', rate:'', brand:'', discount:'0'};
+            state.mode='invoice'; state.invoice={step:'date', date:'', invoiceNo:'', client:'', description:'', qty:'', rate:'', brand:'', discount:'0'};
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice banana shuru.\nDate bhejo - Today likho ya custom date (DD-MM-YYYY) bhejo` });
             continue;
           }
