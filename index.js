@@ -64,7 +64,7 @@ async function getCats() {
   if (Date.now() - catCache.ts < 10 * 60 * 1000) return catCache.list;
   try {
     const r = await cloudinary.api.sub_folders('live-tech-backup', { max_results: 50 });
-    catCache = { list: (r.folders || []).map(f => f.name), ts: Date.now() };
+    catCache = { list: (r.folders || []).map(f => f.name).filter(n => n.toLowerCase() !== 'system'), ts: Date.now() };
   } catch { catCache.ts = Date.now() - 9 * 60 * 1000; } // fail soft, 1min me retry
   return catCache.list;
 }
@@ -151,9 +151,19 @@ poll();setInterval(poll,3000);
 </script></body></html>`);
 });
 
+function verifyVaultToken(tok) {
+  try {
+    const parts = String(tok || '').split('.');
+    if (parts.length !== 2) return false;
+    const [exp, hex] = parts;
+    if (!/^\d+$/.test(exp) || Number(exp) < Date.now()) return false;
+    const mine = crypto.createHmac('sha256', AUTH_PASSWORD).update(exp).digest('hex');
+    return mine.length === hex.length && crypto.timingSafeEqual(Buffer.from(mine), Buffer.from(hex));
+  } catch { return false; }
+}
 function checkAuth(req) {
   const pass = req.query.password || req.headers['x-password'] || req.body?.password || '';
-  return pass === AUTH_PASSWORD;
+  return pass === AUTH_PASSWORD || verifyVaultToken(pass);
 }
 
 app.get('/qr', async (req, res) => {
@@ -210,6 +220,7 @@ app.post('/api/invoice', async (req, res) => {
     if (!inv.invoiceNo) return res.status(400).json({ error: 'invoiceNo number me bhejo' });
     const excelBuf = await generateInvoiceExcelBuffer(inv);
     setLastInvoiceNo(parseInt(inv.invoiceNo, 10));
+    await saveSerialToCloud();
     const b64 = excelBuf.toString('base64');
     const dataUri = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${b64}`;
     const out = await cloudinary.uploader.upload(dataUri, { folder: 'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}.xlsx`, use_filename: true, unique_filename: true, resource_type: 'raw' });
@@ -257,19 +268,27 @@ async function uploadToCloudinary(buffer, filename, category) {
   const mimeMap = { jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', pdf:'application/pdf', mp4:'video/mp4', mov:'video/quicktime', xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', xls:'application/vnd.ms-excel', csv:'text/csv', docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document', doc:'application/msword', pptx:'application/vnd.openxmlformats-officedocument.presentationml.presentation', ppt:'application/vnd.ms-powerpoint', zip:'application/zip', txt:'text/plain' };
   const mime = mimeMap[ext] || 'application/octet-stream';
   const dataUri = `data:${mime};base64,${base64}`;
-  try {
-    const out = await cloudinary.uploader.upload(dataUri, {
-      folder,
-      public_id: filename.replace(/\.[^/.]+$/, '').slice(0,80),
-      use_filename: true,
-      unique_filename: true,
-      resource_type: 'auto',
-    });
-    return out;
-  } catch (e) {
-    console.error('Cloudinary SDK error:', e.message);
-    throw new Error(e.error?.message || e.message || 'cloudinary failed');
+  // ponytail: free-tier Slow Down pe 3 try (2s, 5s), sirf transient errors pe
+  let lastErr = null;
+  for (let i = 0; i < 3; i++) {
+    try {
+      return await cloudinary.uploader.upload(dataUri, {
+        folder,
+        public_id: filename.replace(/\.[^/.]+$/, '').slice(0,80),
+        use_filename: true,
+        unique_filename: true,
+        resource_type: 'auto',
+      });
+    } catch (e) {
+      lastErr = e;
+      const msg = String(e.error?.message || e.message || '').toLowerCase();
+      const transient = /slow down|rate limit|capac|timeout|temporar|econn|socket|network|fetch failed/.test(msg) || (e.http_code && (e.http_code === 429 || e.http_code >= 500));
+      console.error(`Cloudinary try ${i + 1}/3 fail:`, e.message);
+      if (!transient || i === 2) throw new Error(e.error?.message || e.message || 'cloudinary failed');
+      await sleep(i === 0 ? 2000 : 5000);
+    }
   }
+  throw lastErr;
 }
 
 function getState(jid) {
@@ -310,6 +329,27 @@ let lastInvoiceNo = 7779;
 try { const v = fs.readFileSync(path.join(__dirname, 'last_invoice.txt'), 'utf8').trim(); const n = parseInt(v,10); if(!isNaN(n)) lastInvoiceNo = n; } catch {}
 function getNextInvoiceNo(){ return String(lastInvoiceNo + 1); }
 function setLastInvoiceNo(n){ const v=parseInt(n,10); if(!isNaN(v) && v>lastInvoiceNo){ lastInvoiceNo=v; try{ fs.writeFileSync(path.join(__dirname,'last_invoice.txt'), String(v)); }catch{} } }
+// ponytail: serial Cloudinary me durable (disk ephemeral hai, rebuild pe reset se bachao)
+const SERIAL_PID = 'live-tech-backup/system/last_invoice';
+async function saveSerialToCloud() {
+  try {
+    const dataUri = `data:text/plain;base64,${Buffer.from(String(lastInvoiceNo)).toString('base64')}`;
+    await cloudinary.uploader.upload(dataUri, { public_id: SERIAL_PID, resource_type: 'raw', overwrite: true, unique_filename: false, use_filename: false });
+  } catch (e) { console.error('serial cloud save fail:', e.message); }
+}
+async function loadSerialFromCloud() {
+  try {
+    const info = await cloudinary.api.resource(SERIAL_PID, { resource_type: 'raw' });
+    if (!info?.secure_url) return;
+    const r = await fetch(info.secure_url);
+    const n = parseInt((await r.text()).trim(), 10);
+    if (!isNaN(n) && n > lastInvoiceNo) {
+      lastInvoiceNo = n;
+      try { fs.writeFileSync(path.join(__dirname, 'last_invoice.txt'), String(n)); } catch {}
+      console.log(`serial cloud se load: ${n}`);
+    }
+  } catch (e) { console.error('serial cloud load skip:', e.message?.slice(0, 120)); }
+}
 function getStepPrompt(step, inv){
   if(step==='date') return `Date bhejo - Today likho ya DD-MM-YYYY (jaise 04-09-2026). Back ke liye 'back' likho`;
   if(step==='invoiceNo'){ const nxt=getNextInvoiceNo(); return `Invoice No ready hai: ${nxt} (last ${lastInvoiceNo}). Yehi use karna hai to ${nxt} bhejo, ya manual No likho. Back: back`; }
@@ -763,6 +803,7 @@ async function startBot() {
             if(!num || num.length<1){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice No number me bhejo (jaise 7779)` }); continue; }
             inv.invoiceNo=num;
             setLastInvoiceNo(parseInt(num,10));
+            saveSerialToCloud().catch(()=>{});
             inv.step='client';
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice # ${inv.invoiceNo} save (serial ab ${num} se chalega).\n${clientMenuText()}` });
             continue;
@@ -988,6 +1029,7 @@ async function startBot() {
 }
 
 // ─── Server ───
+await loadSerialFromCloud(); // rebuild pe serial reset se bachao (cloud > local)
 app.listen(PORT, () => {
   console.log(`Bot v2 running on port ${PORT}`);
   startBot();
