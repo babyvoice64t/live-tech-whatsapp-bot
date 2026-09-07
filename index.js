@@ -58,18 +58,13 @@ const groupCache = makeSimpleCache(5 * 60);
 const messageStore = new Map();
 const userState = new Map();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-const DEFAULT_CATS = ['Transaction', 'Purchase Order', 'Invoice', 'Important', 'Galaxy', 'Nccpl', 'Asad Bhai Folder', 'Tcp Documents'];
-// ponytail: Cloudinary folders = single source of truth (vault::bot auto-sync), 10min cache
-let catCache = { list: [...DEFAULT_CATS], ts: 0 };
+// ponytail: sirf Cloudinary folders = single source, koi hardcoded default nahi, 10min cache
+let catCache = { list: [], ts: 0 };
 async function getCats() {
   if (Date.now() - catCache.ts < 10 * 60 * 1000) return catCache.list;
   try {
     const r = await cloudinary.api.sub_folders('live-tech-backup', { max_results: 50 });
-    const merged = [...DEFAULT_CATS];
-    for (const f of (r.folders || [])) {
-      if (!merged.some(x => x.toLowerCase() === f.name.toLowerCase())) merged.push(f.name);
-    }
-    catCache = { list: merged, ts: Date.now() };
+    catCache = { list: (r.folders || []).map(f => f.name), ts: Date.now() };
   } catch { catCache.ts = Date.now() - 9 * 60 * 1000; } // fail soft, 1min me retry
   return catCache.list;
 }
