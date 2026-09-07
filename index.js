@@ -71,6 +71,14 @@ function clientMenuText() {
 function msgKeyId(key) { return `${key.remoteJid}:${key.id}`; }
 
 app.use(express.json());
+// CORS for Vault dashboard (Cloudflare Pages calls /api/invoice-meta + /api/invoice)
+app.use((req, res, next) => {
+  res.header('Access-Control-Allow-Origin', '*');
+  res.header('Access-Control-Allow-Methods', 'GET,POST,OPTIONS');
+  res.header('Access-Control-Allow-Headers', 'Content-Type,x-password');
+  if (req.method === 'OPTIONS') return res.sendStatus(204);
+  next();
+});
 
 // ─── Dashboard ───
 app.get('/', (req, res) => {
@@ -154,6 +162,42 @@ app.get('/api/stats', (req, res) => {
   let loggedIn = 0;
   userState.forEach(s => { if (s.loggedIn) loggedIn++; });
   res.json({ connected: isConnected, totalUsers: userState.size, loggedInUsers: loggedIn });
+});
+
+// Invoice meta for Vault dashboard — next no + clients (same source as bot)
+app.get('/api/invoice-meta', (req, res) => {
+  if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
+  res.json({ nextInvoiceNo: getNextInvoiceNo(), lastInvoiceNo, clients: CLIENTS });
+});
+
+// Invoice generate for Vault dashboard — same fill_excel.py + template, uploads to Cloudinary
+app.post('/api/invoice', async (req, res) => {
+  if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const { date, invoiceNo, client, items } = req.body || {};
+    if (!date || !invoiceNo || !client || !Array.isArray(items) || items.length === 0)
+      return res.status(400).json({ error: 'date, invoiceNo, client, items[] required' });
+    const cleanItems = items.slice(0, 20).map(it => ({
+      brand: String(it.brand || '').slice(0, 40),
+      description: String(it.description || '').slice(0, 120),
+      qty: Number(it.qty) || 0,
+      rate: Number(it.rate) || 0,
+      disc: 0,
+    })).filter(it => it.description && it.qty > 0);
+    if (!cleanItems.length) return res.status(400).json({ error: 'koi valid item nahi' });
+    const subtotal = cleanItems.reduce((s, it) => s + it.qty * it.rate, 0);
+    const inv = { date: String(date).slice(0, 12), invoiceNo: String(invoiceNo).replace(/[^0-9]/g, '').slice(0, 10), client: String(client).slice(0, 60), items: cleanItems };
+    if (!inv.invoiceNo) return res.status(400).json({ error: 'invoiceNo number me bhejo' });
+    const excelBuf = await generateInvoiceExcelBuffer(inv);
+    setLastInvoiceNo(parseInt(inv.invoiceNo, 10));
+    const b64 = excelBuf.toString('base64');
+    const dataUri = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${b64}`;
+    const out = await cloudinary.uploader.upload(dataUri, { folder: 'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}`, use_filename: true, unique_filename: true, resource_type: 'raw' });
+    res.json({ ok: true, url: out.secure_url, invoiceNo: inv.invoiceNo, total: subtotal, items: cleanItems.length });
+  } catch (e) {
+    console.error('API invoice fail:', e.message);
+    res.status(500).json({ error: e.message || 'invoice failed' });
+  }
 });
 
 app.post('/disconnect', async (req, res) => {
@@ -437,6 +481,21 @@ function cleanText(t) {
   return (t || '').trim();
 }
 
+// ponytail: forwarded/ephemeral/view-once wrap hota hai, 5 level tak unwrap
+function unwrapMsg(m) {
+  let cur = m;
+  for (let i = 0; i < 5; i++) {
+    if (!cur) break;
+    if (cur.ephemeralMessage) cur = cur.ephemeralMessage.message;
+    else if (cur.viewOnceMessage) cur = cur.viewOnceMessage.message;
+    else if (cur.viewOnceMessageV2) cur = cur.viewOnceMessageV2.message;
+    else if (cur.viewOnceMessageV2Extension) cur = cur.viewOnceMessageV2Extension.message;
+    else if (cur.documentWithCaptionMessage) cur = cur.documentWithCaptionMessage.message;
+    else break;
+  }
+  return cur || m;
+}
+
 function isGreeting(text) {
   const l = text.toLowerCase();
   return ['hi','hello','hey','salam','asalam','assalam','aoa','aslam o alaikum','salam alaikum','start','help','hello bhai','salam bhai'].some(g => l.includes(g));
@@ -575,14 +634,16 @@ async function startBot() {
         state._rawJid = rawJid;
         state._altJid = altJid;
 
+        const inner = unwrapMsg(msg.message);
         const text = cleanText(
-          msg.message.conversation ||
-          msg.message.extendedTextMessage?.text ||
-          msg.message.imageMessage?.caption ||
-          msg.message.documentMessage?.caption ||
-          msg.message.videoMessage?.caption ||
-          msg.message.listResponseMessage?.singleSelectReply?.selectedRowId ||
-          msg.message.buttonsResponseMessage?.selectedButtonId ||
+          inner.conversation ||
+          inner.extendedTextMessage?.text ||
+          inner.imageMessage?.caption ||
+          inner.documentMessage?.caption ||
+          inner.videoMessage?.caption ||
+          inner.audioMessage?.caption ||
+          inner.listResponseMessage?.singleSelectReply?.selectedRowId ||
+          inner.buttonsResponseMessage?.selectedButtonId ||
           ''
         );
         const lower = text.toLowerCase();
@@ -831,27 +892,28 @@ async function startBot() {
         }
 
         // ─── Handle media — block if invoice active ───
-        const isImage = !!msg.message.imageMessage;
-        const isDoc = !!msg.message.documentMessage;
-        const isVideo = !!msg.message.videoMessage;
+        const isImage = !!inner.imageMessage;
+        const isDoc = !!inner.documentMessage;
+        const isVideo = !!inner.videoMessage;
         if (state.invoice && (isImage || isDoc || isVideo)) {
           await sendMessageSafe(primaryJid, fallbackJid, { text: `Pehle invoice complete karo ya cancel likho.` });
           continue;
         }
 
         if (isImage || isDoc || isVideo) {
-          const caption = cleanText(msg.message.imageMessage?.caption || msg.message.documentMessage?.caption || '');
+          const caption = cleanText(inner.imageMessage?.caption || inner.documentMessage?.caption || inner.videoMessage?.caption || '');
           const captionLower = caption.toLowerCase();
           let captionCat = null;
           for (const c of DEFAULT_CATS) {
             if (captionLower.includes(c.toLowerCase())) { captionCat = c; break; }
           }
+          const dlMsg = { ...msg, message: inner };
 
           if (captionCat) {
             try {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${captionCat} me save ho raha hai...` });
-              const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-              let filename = msg.message.imageMessage?.caption?.split('\n')[0] || msg.message.documentMessage?.fileName || `file-${Date.now()}`;
+              const buffer = await downloadMediaMessage(dlMsg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+              let filename = inner.documentMessage?.fileName || caption.split('\n')[0] || `file-${Date.now()}`;
               if (!filename.includes('.')) { if (isImage) filename += '.jpg'; else if (isDoc) filename += '.pdf'; else filename += '.bin'; }
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
               const out = await uploadToCloudinary(buffer, filename, captionCat);
@@ -863,9 +925,10 @@ async function startBot() {
             }
           } else {
             try {
-              const buffer = await downloadMediaMessage(msg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
-              let filename = msg.message.documentMessage?.fileName || `file-${Date.now()}`;
+              const buffer = await downloadMediaMessage(dlMsg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
+              let filename = inner.documentMessage?.fileName || `file-${Date.now()}`;
               if (!filename.includes('.') && isImage) filename += '.jpg';
+              if (!filename.includes('.') && isVideo) filename += '.mp4';
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
               state.pendingFile = { buffer, filename };
               await sendMessageSafe(primaryJid, fallbackJid, { text: `${filename} ready hai\n\n` + catMenu() });
