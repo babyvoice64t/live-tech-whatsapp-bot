@@ -289,7 +289,7 @@ function numberToWords(n) {
 let lastInvoiceNo = 7779;
 try { const v = fs.readFileSync(path.join(__dirname, 'last_invoice.txt'), 'utf8').trim(); const n = parseInt(v,10); if(!isNaN(n)) lastInvoiceNo = n; } catch {}
 function getNextInvoiceNo(){ return String(lastInvoiceNo + 1); }
-function setLastInvoiceNo(n){ const v=parseInt(n,10); if(!isNaN(v)){ lastInvoiceNo=v; try{ fs.writeFileSync(path.join(__dirname,'last_invoice.txt'), String(v)); }catch{} } }
+function setLastInvoiceNo(n){ const v=parseInt(n,10); if(!isNaN(v) && v>lastInvoiceNo){ lastInvoiceNo=v; try{ fs.writeFileSync(path.join(__dirname,'last_invoice.txt'), String(v)); }catch{} } }
 function getStepPrompt(step, inv){
   if(step==='date') return `Date bhejo - Today likho ya DD-MM-YYYY (jaise 04-09-2026). Back ke liye 'back' likho`;
   if(step==='invoiceNo'){ const nxt=getNextInvoiceNo(); return `Invoice No ready hai: ${nxt} (last ${lastInvoiceNo}). Yehi use karna hai to ${nxt} bhejo, ya manual No likho. Back: back`; }
