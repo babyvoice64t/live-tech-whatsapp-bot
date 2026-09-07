@@ -59,6 +59,25 @@ const messageStore = new Map();
 const userState = new Map();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
 const DEFAULT_CATS = ['Transaction', 'Purchase Order', 'Invoice', 'Important', 'Galaxy', 'Nccpl', 'Asad Bhai Folder', 'Tcp Documents'];
+// ponytail: Cloudinary folders = single source of truth (vault::bot auto-sync), 10min cache
+let catCache = { list: [...DEFAULT_CATS], ts: 0 };
+async function getCats() {
+  if (Date.now() - catCache.ts < 10 * 60 * 1000) return catCache.list;
+  try {
+    const r = await cloudinary.api.sub_folders('live-tech-backup', { max_results: 50 });
+    const merged = [...DEFAULT_CATS];
+    for (const f of (r.folders || [])) {
+      if (!merged.some(x => x.toLowerCase() === f.name.toLowerCase())) merged.push(f.name);
+    }
+    catCache = { list: merged, ts: Date.now() };
+  } catch { catCache.ts = Date.now() - 9 * 60 * 1000; } // fail soft, 1min me retry
+  return catCache.list;
+}
+function noteNewCat(name) {
+  if (!catCache.list.some(x => x.toLowerCase() === name.toLowerCase())) {
+    catCache.list.push(name); catCache.ts = Date.now();
+  }
+}
 const CLIENTS = ['Abdul Rehman Garments','Arif Habib Corporation','Arif Habib Limitd','Arif Habib Limited','BDO','BDO Pakistan','Blue Light Computers','CASH','FESF','Habib Public','Habib Public School','Harmain Jewellers','Harmain Jewelllers','Harmain Jweler','MSN','Maple Pharmaceuticals','Maple pharma','Mega Textiles','Mr.Naseem Baig','Mr.Taha','NCCPL','NRT','NoorulQuran madrsa','Murtaza Jaffrani','S.Ejazuddin & Co.','S.Ejazuddin and Co.','S.Ejazudin & Co.','SSFR','SSFR (PVT) LTD.','SSFR PVT LTD','SSFR PVT. LTD.','Sana Safinaz','Shajar Capital','Meezan Bank','TAJ CORPORATION','Virtuesoft'];
 
 function clientMenuText() {
@@ -162,6 +181,12 @@ app.get('/api/stats', (req, res) => {
   let loggedIn = 0;
   userState.forEach(s => { if (s.loggedIn) loggedIn++; });
   res.json({ connected: isConnected, totalUsers: userState.size, loggedInUsers: loggedIn });
+});
+
+// Categories for Vault dashboard — Cloudinary folders = single source (auto-sync)
+app.get('/api/categories', async (req, res) => {
+  if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
+  res.json({ categories: await getCats() });
 });
 
 // Invoice meta for Vault dashboard — next no + clients (same source as bot)
@@ -469,10 +494,11 @@ async function generatePdfFromExcelBuffer(excelBuf) {
   }
 }
 
-function catMenu() {
+async function catMenu() {
+  const cats = await getCats();
   let lines = ['Category choose karo:\n'];
-  DEFAULT_CATS.forEach((c, i) => lines.push(`  ${i + 1}. ${c}`));
-  lines.push(`  ${DEFAULT_CATS.length + 1}. New Category (apna naam likho)`);
+  cats.forEach((c, i) => lines.push(`  ${i + 1}. ${c}`));
+  lines.push(`  ${cats.length + 1}. New Category (apna naam likho)`);
   lines.push(`\nNumber bhejo ya naam likho - jaise 1 ya Invoice`);
   return lines.join('\n');
 }
@@ -653,8 +679,9 @@ async function startBot() {
         // ─── Number reply (for category selection) ───
         if (/^\d+$/.test(text) && state.pendingFile) {
           const num = parseInt(text);
-          if (num >= 1 && num <= DEFAULT_CATS.length) {
-            const cat = DEFAULT_CATS[num - 1];
+          const cats = await getCats();
+          if (num >= 1 && num <= cats.length) {
+            const cat = cats[num - 1];
             try {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${cat} me save ho raha hai...` });
               const out = await uploadToCloudinary(state.pendingFile.buffer, state.pendingFile.filename, cat);
@@ -665,10 +692,10 @@ async function startBot() {
             } catch (e) {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` });
             }
-          } else if (num === DEFAULT_CATS.length + 1) {
+          } else if (num === cats.length + 1) {
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Nayi category ka naam likh ke bhejo (jaise: My Files)` });
           } else {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Galat number. 1-${DEFAULT_CATS.length + 1} tak choose karo.` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Galat number. 1-${cats.length + 1} tak choose karo.` });
           }
           continue;
         }
@@ -864,7 +891,7 @@ async function startBot() {
           continue;
         }
         if (lower === 'list' || lower.includes('vault') || lower.includes('link')) {
-          await sendMessageSafe(primaryJid, fallbackJid, { text: `Vault: ${VAULT_URL}\nCategories: ${DEFAULT_CATS.join(' | ')}` });
+          await sendMessageSafe(primaryJid, fallbackJid, { text: `Vault: ${VAULT_URL}\nCategories: ${(await getCats()).join(' | ')}` });
           continue;
         }
         if (lower === 'logout' || lower.includes('bahar') || lower.includes('exit')) {
@@ -873,13 +900,14 @@ async function startBot() {
           continue;
         }
 
-        // ─── Custom category name (when pending file) ───
+        // ─── Custom category name (when pending file) — nayi ho ya existing, seedha upload ───
         if (state.pendingFile && text && !/^\d+$/.test(text)) {
           const catName = text.replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 30);
-          if (catName && !DEFAULT_CATS.map(c => c.toLowerCase()).includes(catName.toLowerCase())) {
+          if (catName) {
             try {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${catName} me save ho raha hai...` });
               const out = await uploadToCloudinary(state.pendingFile.buffer, state.pendingFile.filename, catName);
+              noteNewCat(catName);
               await sendMessageSafe(primaryJid, fallbackJid, {
                 text: `Ho gaya!\nCategory: ${catName}\nFile: ${state.pendingFile.filename}\nLink: ${out.secure_url}\n\nVault: ${VAULT_URL}`
               });
@@ -904,7 +932,7 @@ async function startBot() {
           const caption = cleanText(inner.imageMessage?.caption || inner.documentMessage?.caption || inner.videoMessage?.caption || '');
           const captionLower = caption.toLowerCase();
           let captionCat = null;
-          for (const c of DEFAULT_CATS) {
+          for (const c of await getCats()) {
             if (captionLower.includes(c.toLowerCase())) { captionCat = c; break; }
           }
           const dlMsg = { ...msg, message: inner };
@@ -931,7 +959,7 @@ async function startBot() {
               if (!filename.includes('.') && isVideo) filename += '.mp4';
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
               state.pendingFile = { buffer, filename };
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `${filename} ready hai\n\n` + catMenu() });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `${filename} ready hai\n\n` + await catMenu() });
             } catch (e) {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `File read failed: ${e.message}` });
             }
@@ -940,7 +968,7 @@ async function startBot() {
         }
 
         // ─── Plain text category name (without file) ───
-        const foundCat = DEFAULT_CATS.find(c => c.toLowerCase() === lower);
+        const foundCat = (await getCats()).find(c => c.toLowerCase() === lower);
         if (foundCat) {
           await sendMessageSafe(primaryJid, fallbackJid, { text: `${foundCat} select hui. Ab is category me file bhejo.` });
           state.lastCat = foundCat;
