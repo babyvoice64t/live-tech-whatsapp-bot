@@ -165,6 +165,15 @@ function checkAuth(req) {
   const pass = req.query.password || req.headers['x-password'] || req.body?.password || '';
   return pass === AUTH_PASSWORD || verifyVaultToken(pass);
 }
+// ponytail: WhatsApp shares me direct Cloudinary link nahi — vault proxy + 30d file-token
+function fileToken(pid, days = 30) {
+  const exp = String(Date.now() + days * 86400 * 1000);
+  const sig = crypto.createHmac('sha256', AUTH_PASSWORD).update(`file:${pid}:${exp}`).digest('hex');
+  return `f.${exp}.${sig}`;
+}
+function vaultFileLink(pid, rt) {
+  return `${VAULT_URL}/api/file?id=${encodeURIComponent(pid)}&rt=${rt || 'raw'}&token=${fileToken(pid)}`;
+}
 
 app.get('/qr', async (req, res) => {
   let qrDataUrl = null;
@@ -224,7 +233,7 @@ app.post('/api/invoice', async (req, res) => {
     const b64 = excelBuf.toString('base64');
     const dataUri = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${b64}`;
     const out = await cloudinary.uploader.upload(dataUri, { folder: 'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}.xlsx`, use_filename: true, unique_filename: true, resource_type: 'raw' });
-    res.json({ ok: true, url: out.secure_url, invoiceNo: inv.invoiceNo, total: subtotal, items: cleanItems.length });
+    res.json({ ok: true, url: vaultFileLink(out.public_id, out.resource_type), invoiceNo: inv.invoiceNo, total: subtotal, items: cleanItems.length });
   } catch (e) {
     console.error('API invoice fail:', e.message);
     res.status(500).json({ error: e.message || 'invoice failed' });
@@ -721,7 +730,7 @@ async function startBot() {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${cat} me save ho raha hai...` });
               const out = await uploadToCloudinary(state.pendingFile.buffer, state.pendingFile.filename, cat);
               await sendMessageSafe(primaryJid, fallbackJid, {
-                text: `Ho gaya!\nCategory: ${cat}\nFile: ${state.pendingFile.filename}\nLink: ${out.secure_url}\n\nVault: ${VAULT_URL}`
+                text: `Ho gaya!\nCategory: ${cat}\nFile: ${state.pendingFile.filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
               });
               state.pendingFile = null;
             } catch (e) {
@@ -870,7 +879,7 @@ async function startBot() {
                   const b64=excelBuf.toString('base64');
                   const dataUri=`data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${b64}`;
                   const out2=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}.xlsx`, use_filename:true, unique_filename:true, resource_type:'raw' });
-                  excelUrl=out2.secure_url;
+                  excelUrl=vaultFileLink(out2.public_id, out2.resource_type);
                 }catch(e){ console.log('Excel gen fail',e.stack||e.message); throw e; }
                 const total = subtotal;
                 let msg=`Ho gaya! Invoice ban gaya.\nInvoice #: ${inv.invoiceNo}\nDate: ${inv.date}\nClient: ${inv.client}\nItems: ${inv.items.length}\n`;
@@ -945,7 +954,7 @@ async function startBot() {
               const out = await uploadToCloudinary(state.pendingFile.buffer, state.pendingFile.filename, catName);
               noteNewCat(catName);
               await sendMessageSafe(primaryJid, fallbackJid, {
-                text: `Ho gaya!\nCategory: ${catName}\nFile: ${state.pendingFile.filename}\nLink: ${out.secure_url}\n\nVault: ${VAULT_URL}`
+                text: `Ho gaya!\nCategory: ${catName}\nFile: ${state.pendingFile.filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
               });
               state.pendingFile = null;
             } catch (e) {
@@ -982,7 +991,7 @@ async function startBot() {
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
               const out = await uploadToCloudinary(buffer, filename, captionCat);
               await sendMessageSafe(primaryJid, fallbackJid, {
-                text: `Ho gaya!\nCategory: ${captionCat}\nFile: ${filename}\nLink: ${out.secure_url}\n\nVault: ${VAULT_URL}`
+                text: `Ho gaya!\nCategory: ${captionCat}\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
               });
             } catch (e) {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` });
