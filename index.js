@@ -58,7 +58,7 @@ const groupCache = makeSimpleCache(5 * 60);
 const messageStore = new Map();
 const userState = new Map();
 const sleep = (ms) => new Promise(r => setTimeout(r, ms));
-const DEFAULT_CATS = ['Transaction', 'Purchase Order', 'Invoice', 'Important'];
+const DEFAULT_CATS = ['Transaction', 'Purchase Order', 'Invoice', 'Important', 'Galaxy', 'Nccpl', 'Asad Bhai Folder', 'Tcp Documents'];
 const CLIENTS = ['Abdul Rehman Garments','Arif Habib Corporation','Arif Habib Limitd','Arif Habib Limited','BDO','BDO Pakistan','Blue Light Computers','CASH','FESF','Habib Public','Habib Public School','Harmain Jewellers','Harmain Jewelllers','Harmain Jweler','MSN','Maple Pharmaceuticals','Maple pharma','Mega Textiles','Mr.Naseem Baig','Mr.Taha','NCCPL','NRT','NoorulQuran madrsa','Murtaza Jaffrani','S.Ejazuddin & Co.','S.Ejazuddin and Co.','S.Ejazudin & Co.','SSFR','SSFR (PVT) LTD.','SSFR PVT LTD','SSFR PVT. LTD.','Sana Safinaz','Shajar Capital','Meezan Bank','TAJ CORPORATION','Virtuesoft'];
 
 function clientMenuText() {
