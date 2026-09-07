@@ -192,7 +192,7 @@ app.post('/api/invoice', async (req, res) => {
     setLastInvoiceNo(parseInt(inv.invoiceNo, 10));
     const b64 = excelBuf.toString('base64');
     const dataUri = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${b64}`;
-    const out = await cloudinary.uploader.upload(dataUri, { folder: 'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}`, use_filename: true, unique_filename: true, resource_type: 'raw' });
+    const out = await cloudinary.uploader.upload(dataUri, { folder: 'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}.xlsx`, use_filename: true, unique_filename: true, resource_type: 'raw' });
     res.json({ ok: true, url: out.secure_url, invoiceNo: inv.invoiceNo, total: subtotal, items: cleanItems.length });
   } catch (e) {
     console.error('API invoice fail:', e.message);
