@@ -203,6 +203,12 @@ app.get('/api/categories', async (req, res) => {
   res.json({ categories: await getCats() });
 });
 
+// Invoice history for Vault dashboard — no, client, date, total (password/token)
+app.get('/api/invoices', async (req, res) => {
+  if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
+  res.json({ invoices: await loadInvIndex() });
+});
+
 // Invoice meta for Vault dashboard — next no + clients (same source as bot)
 app.get('/api/invoice-meta', (req, res) => {
   if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
@@ -233,6 +239,7 @@ app.post('/api/invoice', async (req, res) => {
     const b64 = excelBuf.toString('base64');
     const dataUri = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${b64}`;
     const out = await cloudinary.uploader.upload(dataUri, { folder: 'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}.xlsx`, use_filename: true, unique_filename: true, resource_type: 'raw' });
+    await addInvIndex({ no: inv.invoiceNo, client: inv.client, date: inv.date, items: cleanItems.length, total: subtotal, public_id: out.public_id, rt: out.resource_type });
     res.json({ ok: true, url: vaultFileLink(out.public_id, out.resource_type), invoiceNo: inv.invoiceNo, total: subtotal, items: cleanItems.length });
   } catch (e) {
     console.error('API invoice fail:', e.message);
@@ -411,6 +418,31 @@ let lastInvoiceNo = 7779;
 try { const v = fs.readFileSync(path.join(__dirname, 'last_invoice.txt'), 'utf8').trim(); const n = parseInt(v,10); if(!isNaN(n)) lastInvoiceNo = n; } catch {}
 function getNextInvoiceNo(){ return String(lastInvoiceNo + 1); }
 function setLastInvoiceNo(n){ const v=parseInt(n,10); if(!isNaN(v) && v>lastInvoiceNo){ lastInvoiceNo=v; try{ fs.writeFileSync(path.join(__dirname,'last_invoice.txt'), String(v)); }catch{} } }
+// ponytail: invoice history index (vault history + client filter ke liye), 5min cache
+const INVOICES_PID = 'live-tech-backup/system/invoices.json';
+let invIndexCache = { list: [], ts: 0 };
+async function loadInvIndex() {
+  if (Date.now() - invIndexCache.ts < 5 * 60 * 1000) return invIndexCache.list;
+  try {
+    const info = await cloudinary.api.resource(INVOICES_PID, { resource_type: 'raw' });
+    if (info?.secure_url) {
+      const r = await fetch(info.secure_url);
+      const j = await r.json();
+      if (Array.isArray(j)) invIndexCache = { list: j, ts: Date.now() };
+    }
+  } catch {}
+  return invIndexCache.list;
+}
+async function addInvIndex(entry) {
+  try {
+    const list = await loadInvIndex();
+    const i = list.findIndex(x => String(x.no) === String(entry.no));
+    if (i >= 0) list[i] = entry; else list.unshift(entry);
+    const dataUri = `data:application/json;base64,${Buffer.from(JSON.stringify(list.slice(0, 500))).toString('base64')}`;
+    await cloudinary.uploader.upload(dataUri, { public_id: INVOICES_PID, resource_type: 'raw', overwrite: true, unique_filename: false, use_filename: false });
+    invIndexCache = { list, ts: Date.now() };
+  } catch (e) { console.error('inv index save fail:', e.message); }
+}
 // ponytail: serial Cloudinary me durable (disk ephemeral hai, rebuild pe reset se bachao)
 const SERIAL_PID = 'live-tech-backup/system/last_invoice';
 async function saveSerialToCloud() {
@@ -950,14 +982,16 @@ async function startBot() {
                 inv.discount='0'; inv.client=inv.client||'Walk-in Client';
                 // prepare inv for excel - pass items
                 const excelBuf=await generateInvoiceExcelBuffer({...inv, items: inv.items});
-                let excelUrl='';
+                let excelUrl='', idxPid='', idxRt='raw';
                 try{
                   const b64=excelBuf.toString('base64');
                   const dataUri=`data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${b64}`;
                   const out2=await cloudinary.uploader.upload(dataUri, { folder:'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}.xlsx`, use_filename:true, unique_filename:true, resource_type:'raw' });
                   excelUrl=vaultFileLink(out2.public_id, out2.resource_type);
+                  idxPid=out2.public_id; idxRt=out2.resource_type;
                 }catch(e){ console.log('Excel gen fail',e.stack||e.message); throw e; }
                 const total = subtotal;
+                addInvIndex({ no: inv.invoiceNo, client: inv.client, date: inv.date, items: inv.items.length, total, public_id: idxPid, rt: idxRt }).catch(()=>{});
                 let msg=`Ho gaya! Invoice ban gaya.\nInvoice #: ${inv.invoiceNo}\nDate: ${inv.date}\nClient: ${inv.client}\nItems: ${inv.items.length}\n`;
                 inv.items.forEach((it,i)=>{ msg+=`${i+1}. ${it.description} | ${it.qty} x ${it.rate} = ${(Number(it.qty)*Number(it.rate)).toFixed(2)}${it.brand?' | '+it.brand:''}\n`; });
                 msg+=`Total: ${total.toFixed(2)}\n\nExcel: ${excelUrl}\n\nVault: ${VAULT_URL}`;
