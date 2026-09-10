@@ -331,6 +331,48 @@ async function classifyImage(buffer, mime, cats) {
   } catch { return null; } finally { clearTimeout(t); }
 }
 
+// ponytail: PDF ka text padh ke classify (tasveer banane ki zarurat nahi, 0 transform cost)
+let pdfjsMod = null;
+async function extractPdfText(buffer, maxChars = 2000) {
+  try {
+    if (!pdfjsMod) pdfjsMod = await import('pdfjs-dist/legacy/build/pdf.mjs');
+    const doc = await pdfjsMod.getDocument({ data: new Uint8Array(buffer), isEvalSupported: false, useSystemFonts: true }).promise;
+    let out = '';
+    const pages = Math.min(doc.numPages || 0, 2);
+    for (let p = 1; p <= pages && out.length < maxChars; p++) {
+      const page = await doc.getPage(p);
+      const tc = await page.getTextContent();
+      out += (tc.items || []).map(it => it.str || '').join(' ') + '\n';
+    }
+    try { if (typeof doc.cleanup === 'function') await doc.cleanup(); } catch {}
+    return out.replace(/\s+/g, ' ').trim().slice(0, maxChars);
+  } catch { return ''; }
+}
+async function classifyText(snippet, cats) {
+  if (!GROQ_API_KEY || !snippet || snippet.length < 30 || !cats.length) return null;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 45000);
+  try {
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: GROQ_MODEL, temperature: 0, max_tokens: 60,
+        messages: [{ role: 'user', content: `This is text extracted from a business document. Reply ONLY JSON {"seen":"2-4 word summary","category":"exact match"} where category must be exactly one of: ${cats.join(', ')}. If unsure, use "Important".\n\nDocument text:\n${snippet}` }],
+      }),
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const m = String(j.choices?.[0]?.message?.content || '').match(/\{[^}]*\}/);
+    if (!m) return null;
+    const o = JSON.parse(m[0]);
+    const hit = cats.find(c => c.toLowerCase() === String(o.category || '').toLowerCase());
+    if (!hit) return null;
+    return { cat: hit, seen: String(o.seen || 'document').slice(0, 80) };
+  } catch { return null; } finally { clearTimeout(t); }
+}
+
 function getState(jid) {
   const norm = jidNormalizedUser(jid);
   if (!userState.has(norm)) userState.set(norm, { loggedIn: false, attempts: 0, pendingFile: null, lastCat: null, rawJid: jid, mode: null, invoice: null });
@@ -1050,6 +1092,19 @@ async function startBot() {
                   noteNewCat(guess.cat);
                   await sendMessageSafe(primaryJid, fallbackJid, {
                     text: `🔍 ${guess.seen}\n${guess.cat} me save ✅\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
+                  });
+                  continue;
+                }
+              }
+              // Group: PDF text classify (typed bills; scanned/photo-PDF → menu)
+              if (isGroup && isDoc && GROQ_API_KEY && /\.pdf$/i.test(filename) && buffer.length < 8000000) {
+                await sendMessageSafe(primaryJid, fallbackJid, { text: `Padh raha hun... 📄` });
+                const guess = await classifyText(await extractPdfText(buffer), await getCats());
+                if (guess) {
+                  const out = await uploadToCloudinary(buffer, filename, guess.cat);
+                  noteNewCat(guess.cat);
+                  await sendMessageSafe(primaryJid, fallbackJid, {
+                    text: `📄 ${guess.seen}\n${guess.cat} me save ✅\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
                   });
                   continue;
                 }
