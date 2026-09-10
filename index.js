@@ -300,6 +300,37 @@ async function uploadToCloudinary(buffer, filename, category) {
   throw lastErr;
 }
 
+// ─── Groq vision classify (group auto-categorize, JSON-only taake language se farq na pare) ───
+const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
+const GROQ_MODEL = process.env.GROQ_MODEL || 'qwen/qwen3.8-27b';
+async function classifyImage(buffer, mime, cats) {
+  if (!GROQ_API_KEY || !cats.length) return null;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 60000);
+  try {
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: GROQ_MODEL, temperature: 0, max_tokens: 120,
+        messages: [{ role: 'user', content: [
+          { type: 'text', text: `Classify this image. Reply ONLY JSON {"seen":"short description","category":"exact match"} where category must be exactly one of: ${cats.join(', ')}. If unsure, use "Important".` },
+          { type: 'image_url', image_url: { url: `data:${mime || 'image/jpeg'};base64,${buffer.toString('base64')}` } },
+        ] }],
+      }),
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const m = String(j.choices?.[0]?.message?.content || '').match(/\{[^}]*\}/);
+    if (!m) return null;
+    const o = JSON.parse(m[0]);
+    const hit = cats.find(c => c.toLowerCase() === String(o.category || '').toLowerCase());
+    if (!hit) return null;
+    return { cat: hit, seen: String(o.seen || 'file').slice(0, 80) };
+  } catch { return null; } finally { clearTimeout(t); }
+}
+
 function getState(jid) {
   const norm = jidNormalizedUser(jid);
   if (!userState.has(norm)) userState.set(norm, { loggedIn: false, attempts: 0, pendingFile: null, lastCat: null, rawJid: jid, mode: null, invoice: null });
@@ -703,6 +734,9 @@ async function startBot() {
         // Keep raw mapping for send fallback
         state._rawJid = rawJid;
         state._altJid = altJid;
+        // Groups: no password, backup-only (DM me invoice). Spam se bachne ke liye fallback/menu group me khamosh.
+        const isGroup = rawJid.endsWith('@g.us');
+        if (isGroup) { state.loggedIn = true; state.invoice = null; }
 
         const inner = unwrapMsg(msg.message);
         const text = cleanText(
@@ -908,6 +942,10 @@ async function startBot() {
             continue;
           }
           if (lower==='2' || lower.includes('invoice')) {
+            if (isGroup) {
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice DM me banao — mujhe personal chat me msg karo.` });
+              continue;
+            }
             state.mode='invoice'; state.invoice={step:'date', date:'', invoiceNo:'', client:'', description:'', qty:'', rate:'', brand:'', discount:'0', items:[]};
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice banana shuru.\nDate bhejo - Today likho ya custom date (DD-MM-YYYY) bhejo` });
             continue;
@@ -919,7 +957,7 @@ async function startBot() {
           }
         }
         // Auto show menu if no mode and no pendingFile and no invoice
-        if (!state.invoice && !state.pendingFile && !['help','?','list','logout'].includes(lower) && !lower.includes('vault') && !lower.includes('link') && !lower.includes('madad')) {
+        if (!isGroup && !state.invoice && !state.pendingFile && !['help','?','list','logout'].includes(lower) && !lower.includes('vault') && !lower.includes('link') && !lower.includes('madad')) {
           // if user just logged in and sends something else, show menu once
           if (!state._menuShown) {
             state._menuShown=true;
@@ -1003,6 +1041,19 @@ async function startBot() {
               if (!filename.includes('.') && isImage) filename += '.jpg';
               if (!filename.includes('.') && isVideo) filename += '.mp4';
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+              // Group: AI auto-categorize (image + key + 3.5MB se chhoti)
+              if (isGroup && isImage && GROQ_API_KEY && buffer.length < 3500000) {
+                await sendMessageSafe(primaryJid, fallbackJid, { text: `Dekh raha hun... 🔍` });
+                const guess = await classifyImage(buffer, inner.imageMessage?.mimetype, await getCats());
+                if (guess) {
+                  const out = await uploadToCloudinary(buffer, filename, guess.cat);
+                  noteNewCat(guess.cat);
+                  await sendMessageSafe(primaryJid, fallbackJid, {
+                    text: `🔍 ${guess.seen}\n${guess.cat} me save ✅\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
+                  });
+                  continue;
+                }
+              }
               state.pendingFile = { buffer, filename };
               await sendMessageSafe(primaryJid, fallbackJid, { text: `${filename} ready hai\n\n` + await catMenu() });
             } catch (e) {
@@ -1020,8 +1071,8 @@ async function startBot() {
           continue;
         }
 
-        // Smart fallback — agar kuch samajh na aaye
-        if (lower.length > 2) {
+        // Smart fallback — agar kuch samajh na aaye (group me khamosh, warna spam)
+        if (!isGroup && lower.length > 2) {
           await sendMessageSafe(primaryJid, fallbackJid, { text: `Samajh nahi aaya. File bhejo ya help likho.` });
         }
 
