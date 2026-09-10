@@ -314,7 +314,7 @@ async function classifyImage(buffer, mime, cats) {
       body: JSON.stringify({
         model: GROQ_MODEL, temperature: 0, max_tokens: 120,
         messages: [{ role: 'user', content: [
-          { type: 'text', text: `Classify this image. Reply ONLY JSON {"seen":"short description","category":"exact match"} where category must be exactly one of: ${cats.join(', ')}. If unsure, use "Important".` },
+          { type: 'text', text: `Classify this image. Reply ONLY JSON {"seen":"short description","category":"exact match"} where category must be exactly one of: ${cats.join(', ')}. If unsure, reply exactly {"seen":"...","category":"UNKNOWN"}.` },
           { type: 'image_url', image_url: { url: `data:${mime || 'image/jpeg'};base64,${buffer.toString('base64')}` } },
         ] }],
       }),
@@ -358,7 +358,7 @@ async function classifyText(snippet, cats) {
       headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
       body: JSON.stringify({
         model: GROQ_MODEL, temperature: 0, max_tokens: 60,
-        messages: [{ role: 'user', content: `This is text extracted from a business document. Reply ONLY JSON {"seen":"2-4 word summary","category":"exact match"} where category must be exactly one of: ${cats.join(', ')}. If unsure, use "Important".\n\nDocument text:\n${snippet}` }],
+        messages: [{ role: 'user', content: `This is text extracted from a business document. Reply ONLY JSON {"seen":"2-4 word summary","category":"exact match"} where category must be exactly one of: ${cats.join(', ')}. If unsure, reply exactly {"seen":"...","category":"UNKNOWN"}.\n\nDocument text:\n${snippet}` }],
       }),
       signal: ctrl.signal,
     });
@@ -1011,7 +1011,7 @@ async function startBot() {
         // ─── Logged in commands — smart ───
         if (lower === 'help' || lower === '?' || lower.includes('madad') || lower.includes('help')) {
           await sendMessageSafe(primaryJid, fallbackJid, {
-            text: `Help:\n1. File bhejo (image/PDF/video)\n2. Category number choose karo (1-5)\n3. Upload ho jayega + link milega\n\nCommands:\nhelp - ye message\nlist - vault link dekho\nlogout - bahar niklo\nmenu - main menu`
+            text: `Help:\n1. File bhejo (image/PDF/video)\n2. Category number choose karo (list me se)\n3. Upload ho jayega + link milega\n\nCommands:\nhelp - ye message\nlist - vault link dekho\nlogout - bahar niklo\nmenu - main menu`
           });
           continue;
         }
