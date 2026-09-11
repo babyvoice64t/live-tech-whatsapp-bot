@@ -689,7 +689,33 @@ function unwrapMsg(m) {
 
 function isGreeting(text) {
   const l = text.toLowerCase();
-  return ['hi','hello','hey','salam','asalam','assalam','aoa','aslam o alaikum','salam alaikum','start','help','hello bhai','salam bhai'].some(g => l.includes(g));
+  if (/\b(hi|hello|hey|salam|aoa|start|help)\b/.test(l)) return true;
+  return ['aslam o alaikum', 'salam alaikum', 'hello bhai', 'salam bhai', 'assalam', 'wa alaikum'].some(g => l.includes(g));
+}
+// ponytail: rules fail hon to Groq intent — dimagh AI ka, haath apne code ke (number/link AI nahi banata)
+async function aiIntent(text) {
+  if (!GROQ_API_KEY) return null;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 30000);
+  try {
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: GROQ_MODEL, temperature: 0.2, max_tokens: 150,
+        messages: [
+          { role: 'system', content: `You route messages for a backup/invoice WhatsApp bot (Roman Urdu + English). Reply ONLY JSON {"intent":"...","client":"","reply":""}. intents: backup (user wants to save/send a file), invoice_start (wants to MAKE a new invoice), invoice_search (asks about an existing invoice/bill — put client name or number in client), list (vault link), help, logout, smalltalk (greetings/thanks/ok/how-are-you — put 1-2 line friendly Roman Urdu in reply, else empty), unknown. Never invent numbers, links, or prices.` },
+          { role: 'user', content: String(text).slice(0, 300) },
+        ],
+      }),
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const m = String(j.choices?.[0]?.message?.content || '').match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    return JSON.parse(m[0]);
+  } catch { return null; } finally { clearTimeout(t); }
 }
 
 // Robust send: tries primary JID then fallback, logs every attempt per official docs
@@ -881,7 +907,7 @@ async function startBot() {
             continue;
           }
 
-          if (isGreeting(lower) || lower.length < 10) {
+          if (isGreeting(lower)) {
             const greet = lower.includes('salam') || lower.includes('aoa') ? 'Wa Alaikum Salam!' : 'Assalam o Alaikum!';
             await sendMessageSafe(primaryJid, fallbackJid, {
               text: `${greet} Live Tech Backup Bot me khush amdeed.\n\nFile bhejne ke liye pehle password bhejo, phir aap file upload kar sakte ho.`
@@ -940,7 +966,7 @@ async function startBot() {
             setLastInvoiceNo(parseInt(num,10));
             saveSerialToCloud().catch(()=>{});
             inv.step='client';
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice # ${inv.invoiceNo} save (serial ab ${num} se chalega).\n${clientMenuText()}` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice # ${inv.invoiceNo} save ho gaya.\n${clientMenuText()}` });
             continue;
           }
           if (inv.step === 'client') {
@@ -1035,7 +1061,7 @@ async function startBot() {
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Backup mode on hai. Ab file bhejo (image, PDF, video, xlsx).` });
             continue;
           }
-          if (lower==='2' || lower.includes('invoice')) {
+          if (lower==='2' || lower==='invoice' || lower.includes('invoice banao') || lower.includes('invoice banana') || lower.includes('new invoice')) {
             if (isGroup) {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice DM me banao — mujhe personal chat me msg karo.` });
               continue;
@@ -1184,9 +1210,41 @@ async function startBot() {
           continue;
         }
 
-        // Smart fallback — agar kuch samajh na aaye (group me khamosh, warna spam)
+        // Smart fallback — pehle AI intent, warna menu (group me khamosh, warna spam)
         if (!isGroup && lower.length > 2) {
-          await sendMessageSafe(primaryJid, fallbackJid, { text: `Samajh nahi aaya. File bhejo ya help likho.` });
+          const ai = await aiIntent(text).catch(() => null);
+          const intent = ai?.intent || 'unknown';
+          if (intent === 'backup') {
+            state.mode = 'backup'; state.invoice = null;
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Backup mode on hai. Ab file bhejo (image, PDF, video, xlsx).` });
+          } else if (intent === 'invoice_start') {
+            state.mode = 'invoice'; state.invoice = { step: 'date', date: '', invoiceNo: '', client: '', description: '', qty: '', rate: '', brand: '', discount: '0', items: [] };
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice banana shuru.\nDate bhejo - Today likho ya custom date (DD-MM-YYYY) bhejo` });
+          } else if (intent === 'invoice_search') {
+            const q = String(ai.client || '').toLowerCase().trim();
+            const list = await loadInvIndex();
+            const hits = list.filter(e => !q || String(e.client || '').toLowerCase().includes(q) || String(e.no || '').includes(q)).slice(0, 5);
+            if (!hits.length) {
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Koi invoice nahi mila${q ? ` (${ai.client})` : ''}. Naya banana ho to 2 likho.` });
+            } else {
+              let out = `Mile ${hits.length} invoice:\n`;
+              hits.forEach(e => { out += `#${e.no} | ${e.client || '—'} | ${e.total != null && e.total !== '' && !isNaN(Number(e.total)) ? Number(e.total).toFixed(2) : '—'}\n`; });
+              hits.forEach(e => { if (e.public_id) out += `#${e.no}: ${vaultFileLink(e.public_id, e.rt || 'raw')}\n`; });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: out });
+            }
+          } else if (intent === 'list') {
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Vault: ${VAULT_URL}\nCategories: ${(await getCats()).join(' | ')}` });
+          } else if (intent === 'help') {
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Help:\nFile bhejo (backup), 2 likho (invoice), invoice search ke liye client naam likho.\nCommands: help • list • logout • menu` });
+          } else if (intent === 'logout') {
+            state.loggedIn = false; state.invoice = null; state.mode = null; state._menuShown = false;
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Logout ho gaya. Dobara login ke liye password bhejo.` });
+          } else if (intent === 'smalltalk' && ai.reply) {
+            const clean = String(ai.reply).slice(0, 300).replace(/https?:\S+/g, '').trim();
+            await sendMessageSafe(primaryJid, fallbackJid, { text: clean || `Ji! File bhejo ya help likho.` });
+          } else {
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Samajh nahi aaya. File bhejo, 2 likh ke invoice banao, ya help likho.` });
+          }
         }
 
       } catch (err) {
