@@ -186,7 +186,7 @@ app.get('/health', (req, res) => res.json({ ok: true, connected: isConnected, us
 app.get('/debug', (req, res) => {
   if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
   const users = [];
-  userState.forEach((v, k) => users.push({ jid: k, loggedIn: v.loggedIn, hasPending: !!v.pendingFile, attempts: v.attempts }));
+  userState.forEach((v, k) => users.push({ jid: k, loggedIn: v.loggedIn, hasPending: (v.pendingQueue || []).length, attempts: v.attempts }));
   res.json({ connected: isConnected, hasSock: !!sock, users, qrPresent: !!qrString });
 });
 
@@ -382,7 +382,8 @@ async function classifyText(snippet, cats) {
 
 function getState(jid) {
   const norm = jidNormalizedUser(jid);
-  if (!userState.has(norm)) userState.set(norm, { loggedIn: false, attempts: 0, pendingFile: null, lastCat: null, rawJid: jid, mode: null, invoice: null });
+  if (!userState.has(norm)) userState.set(norm, { loggedIn: false, attempts: 0, pendingQueue: [], lastCat: null, rawJid: jid, mode: null, invoice: null });
+  if (!userState.get(norm).pendingQueue) userState.get(norm).pendingQueue = [];
   const s = userState.get(norm);
   s.rawJid = jid;
   return s;
@@ -651,6 +652,21 @@ async function catMenu() {
   lines.push(`\nNumber bhejo ya naam likho - jaise 1 ya Invoice`);
   return lines.join('\n');
 }
+// ponytail: har backup file pe aaj ki date + line-wise queue (ek-ek karke)
+function datedName(filename) {
+  const d = new Date();
+  const stamp = `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
+  const i = filename.lastIndexOf('.');
+  if (i <= 0) return `${filename}_${stamp}`;
+  return `${filename.slice(0, i)}_${stamp}${filename.slice(i)}`;
+}
+function pendingCount(s) { return (s.pendingQueue || []).length; }
+async function nextPrompt(s) {
+  const f = s.pendingQueue[0];
+  if (!f) return '';
+  const n = s.pendingQueue.length;
+  return `File: ${f.filename}${n > 1 ? ` (1/${n} — baaki line me)` : ''} ready hai\n\n` + await catMenu();
+}
 
 function cleanText(t) {
   return (t || '').trim();
@@ -828,19 +844,21 @@ async function startBot() {
 
         await sleep(1000);
 
-        // ─── Number reply (for category selection) ───
-        if (/^\d+$/.test(text) && state.pendingFile) {
+        // ─── Number reply (for category selection) — line ki pehli file pe ───
+        if (/^\d+$/.test(text) && pendingCount(state)) {
           const num = parseInt(text);
           const cats = await getCats();
+          const cur = state.pendingQueue[0];
           if (num >= 1 && num <= cats.length) {
             const cat = cats[num - 1];
             try {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${cat} me save ho raha hai...` });
-              const out = await uploadToCloudinary(state.pendingFile.buffer, state.pendingFile.filename, cat);
-              await sendMessageSafe(primaryJid, fallbackJid, {
-                text: `Ho gaya!\nCategory: ${cat}\nFile: ${state.pendingFile.filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
-              });
-              state.pendingFile = null;
+              const fname = datedName(cur.filename);
+              const out = await uploadToCloudinary(cur.buffer, fname, cat);
+              state.pendingQueue.shift();
+              let doneMsg = `Ho gaya!\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`;
+              if (pendingCount(state)) doneMsg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
+              await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
             } catch (e) {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` });
             }
@@ -1032,8 +1050,8 @@ async function startBot() {
             continue;
           }
         }
-        // Auto show menu if no mode and no pendingFile and no invoice
-        if (!isGroup && !state.invoice && !state.pendingFile && !['help','?','list','logout'].includes(lower) && !lower.includes('vault') && !lower.includes('link') && !lower.includes('madad')) {
+        // Auto show menu if no mode and no pending queue and no invoice
+        if (!isGroup && !state.invoice && !pendingCount(state) && !['help','?','list','logout'].includes(lower) && !lower.includes('vault') && !lower.includes('link') && !lower.includes('madad')) {
           // if user just logged in and sends something else, show menu once
           if (!state._menuShown) {
             state._menuShown=true;
@@ -1059,18 +1077,20 @@ async function startBot() {
           continue;
         }
 
-        // ─── Custom category name (when pending file) — nayi ho ya existing, seedha upload ───
-        if (state.pendingFile && text && !/^\d+$/.test(text)) {
+        // ─── Custom category name (when pending file) — line ki pehli file pe ───
+        if (pendingCount(state) && text && !/^\d+$/.test(text)) {
           const catName = text.replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 30);
           if (catName) {
+            const cur = state.pendingQueue[0];
             try {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${catName} me save ho raha hai...` });
-              const out = await uploadToCloudinary(state.pendingFile.buffer, state.pendingFile.filename, catName);
+              const fname = datedName(cur.filename);
+              const out = await uploadToCloudinary(cur.buffer, fname, catName);
               noteNewCat(catName);
-              await sendMessageSafe(primaryJid, fallbackJid, {
-                text: `Ho gaya!\nCategory: ${catName}\nFile: ${state.pendingFile.filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
-              });
-              state.pendingFile = null;
+              state.pendingQueue.shift();
+              let doneMsg = `Ho gaya!\nCategory: ${catName}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`;
+              if (pendingCount(state)) doneMsg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
+              await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
             } catch (e) {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` });
             }
@@ -1103,6 +1123,7 @@ async function startBot() {
               let filename = inner.documentMessage?.fileName || caption.split('\n')[0] || `file-${Date.now()}`;
               if (!filename.includes('.')) { if (isImage) filename += '.jpg'; else if (isDoc) filename += '.pdf'; else filename += '.bin'; }
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+              filename = datedName(filename);
               const out = await uploadToCloudinary(buffer, filename, captionCat);
               await sendMessageSafe(primaryJid, fallbackJid, {
                 text: `Ho gaya!\nCategory: ${captionCat}\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
@@ -1122,6 +1143,7 @@ async function startBot() {
                 await sendMessageSafe(primaryJid, fallbackJid, { text: `Dekh raha hun... 🔍` });
                 const guess = await classifyImage(buffer, inner.imageMessage?.mimetype, await getCats());
                 if (guess) {
+                  filename = datedName(filename);
                   const out = await uploadToCloudinary(buffer, filename, guess.cat);
                   noteNewCat(guess.cat);
                   await sendMessageSafe(primaryJid, fallbackJid, {
@@ -1135,6 +1157,7 @@ async function startBot() {
                 await sendMessageSafe(primaryJid, fallbackJid, { text: `Padh raha hun... 📄` });
                 const guess = await classifyText(await extractPdfText(buffer), await getCats());
                 if (guess) {
+                  filename = datedName(filename);
                   const out = await uploadToCloudinary(buffer, filename, guess.cat);
                   noteNewCat(guess.cat);
                   await sendMessageSafe(primaryJid, fallbackJid, {
@@ -1143,8 +1166,9 @@ async function startBot() {
                   continue;
                 }
               }
-              state.pendingFile = { buffer, filename };
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `${filename} ready hai\n\n` + await catMenu() });
+              if (!state.pendingQueue) state.pendingQueue = [];
+              state.pendingQueue.push({ buffer, filename });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: await nextPrompt(state) });
             } catch (e) {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `File read failed: ${e.message}` });
             }
