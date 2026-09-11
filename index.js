@@ -704,7 +704,7 @@ async function aiIntent(text) {
       body: JSON.stringify({
         model: GROQ_MODEL, temperature: 0.2, max_tokens: 150,
         messages: [
-          { role: 'system', content: `You route messages for a backup/invoice WhatsApp bot (Roman Urdu + English). Reply ONLY JSON {"intent":"...","client":"","reply":""}. intents: backup (user wants to save/send a file), invoice_start (wants to MAKE a new invoice), invoice_search (asks about an existing invoice/bill — put client name or number in client), list (vault link), help, logout, smalltalk (greetings/thanks/ok/how-are-you — put 1-2 line friendly Roman Urdu in reply, else empty), unknown. Never invent numbers, links, or prices.` },
+          { role: 'system', content: `Today is ${formatDateDDMMYYYY(new Date())}. You route messages for a backup/invoice WhatsApp bot (Roman Urdu + English). Reply ONLY JSON {"intent":"...","client":"","date":"","reply":""}. intents: backup (user wants to save/send a file), invoice_start (wants to MAKE a new invoice), invoice_search (asks about an existing invoice/bill — put client name or number in client), date_search (asks for files/invoices of a day — put date as DD-MM-YYYY in date, resolve today/yesterday), list (vault link), help, logout, smalltalk (greetings/thanks/ok/how-are-you — put 1-2 line friendly Roman Urdu in reply, else empty), unknown. Never invent numbers, links, or prices.` },
           { role: 'user', content: String(text).slice(0, 300) },
         ],
       }),
@@ -1230,6 +1230,27 @@ async function startBot() {
               let out = `Mile ${hits.length} invoice:\n`;
               hits.forEach(e => { out += `#${e.no} | ${e.client || '—'} | ${e.total != null && e.total !== '' && !isNaN(Number(e.total)) ? Number(e.total).toFixed(2) : '—'}\n`; });
               hits.forEach(e => { if (e.public_id) out += `#${e.no}: ${vaultFileLink(e.public_id, e.rt || 'raw')}\n`; });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: out });
+            }
+          } else if (intent === 'date_search') {
+            const target = String(ai.date || '').trim();
+            const invList = await loadInvIndex();
+            const invHits = invList.filter(e => e.date === target).slice(0, 5);
+            let fileHits = [];
+            try {
+              const sr = await cloudinary.search.expression('folder:live-tech-backup/*').sort_by('created_at', 'desc').max_results(100).execute();
+              fileHits = (sr.resources || []).filter(r => {
+                const d = new Date(r.created_at);
+                return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}` === target;
+              }).slice(0, 5);
+            } catch {}
+            if (!invHits.length && !fileHits.length) {
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `${target || 'Us din'} ka kuch nahi mila. Date DD-MM-YYYY me likho.` });
+            } else {
+              let out = `${target} ka record:\n`;
+              invHits.forEach(e => { out += `🧾 #${e.no} | ${e.client || '—'}\n`; });
+              invHits.forEach(e => { if (e.public_id) out += `#${e.no}: ${vaultFileLink(e.public_id, e.rt || 'raw')}\n`; });
+              fileHits.forEach(f => { out += `📁 ${f.public_id.split('/').pop()}: ${vaultFileLink(f.public_id, f.resource_type || 'raw')}\n`; });
               await sendMessageSafe(primaryJid, fallbackJid, { text: out });
             }
           } else if (intent === 'list') {
