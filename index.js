@@ -714,7 +714,8 @@ async function catMenu() {
   let lines = ['Category choose karo:\n'];
   cats.forEach((c, i) => lines.push(`  ${i + 1}. ${c}`));
   lines.push(`  ${cats.length + 1}. New Category (apna naam likho)`);
-  lines.push(`\nNumber bhejo ya naam likho - jaise 1 ya Invoice`);
+  lines.push(`  0. Cancel (ye file rehne do, upload mat karo)`);
+  lines.push(`\nNumber bhejo ya naam likho - jaise 1 ya Invoice, cancel ke liye 0`);
   return lines.join('\n');
 }
 // ponytail: har backup file pe aaj ki date + line-wise queue (ek-ek karke)
@@ -955,8 +956,13 @@ async function startBot() {
             }
           } else if (num === cats.length + 1) {
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Nayi category ka naam likh ke bhejo (jaise: My Files)` });
+          } else if (num === 0) {
+            const dropped = state.pendingQueue.shift();
+            let msg = `Rehne di ❌ ${dropped ? dropped.filename : ''} upload nahi hui.`;
+            if (pendingCount(state)) msg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
+            await sendMessageSafe(primaryJid, fallbackJid, { text: msg });
           } else {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Galat number. 1-${cats.length + 1} tak choose karo.` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Galat number. 0-${cats.length + 1} tak choose karo.` });
           }
           continue;
         }
@@ -1204,6 +1210,13 @@ async function startBot() {
 
         // ─── Custom category name (when pending file) — line ki pehli file pe ───
         if (pendingCount(state) && text && !/^\d+$/.test(text)) {
+          if (['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'].includes(lower)) {
+            const dropped = state.pendingQueue.shift();
+            let msg = `Rehne di ❌ ${dropped ? dropped.filename : ''} upload nahi hui.`;
+            if (pendingCount(state)) msg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
+            await sendMessageSafe(primaryJid, fallbackJid, { text: msg });
+            continue;
+          }
           const catName = text.replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 30);
           if (catName) {
             const cur = state.pendingQueue[0];
