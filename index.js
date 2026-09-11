@@ -392,24 +392,67 @@ function getState(jid) {
 function mainMenuText() {
   return `Main Menu:\n1. Backup add karna (file bhejo)\n2. Invoice banana\n3. Purane documents mangwana (date se)\n\n1, 2 ya 3 bhejo`;
 }
+// ponytail: AI se date nikalo ("5 din pehle", "1 mahine pehle" Roman Urdu samajhta hai)
+async function aiResolveDate(text) {
+  if (!GROQ_API_KEY) return null;
+  const ctrl = new AbortController();
+  const t = setTimeout(() => ctrl.abort(), 30000);
+  try {
+    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+      method: 'POST',
+      headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
+      body: JSON.stringify({
+        model: GROQ_MODEL, temperature: 0, max_tokens: 60,
+        messages: [
+          { role: 'system', content: `Today is ${formatDateDDMMYYYY(new Date())}. Resolve the user's day/span to JSON ONLY {"date":"DD-MM-YYYY","days":1}. Examples: "5 din pehle"→date 5 days ago days 1, "1 mahine pehle"→date 30 days ago days 1, "pichle hafte ke"→date 7 days ago days 7, "pichle mahine ke"→date 30 days ago days 30, "peer ko"→most recent past Monday days 1. Cap days at 31. If no date meant, {"date":"","days":0}.` },
+          { role: 'user', content: String(text).slice(0, 200) },
+        ],
+      }),
+      signal: ctrl.signal,
+    });
+    if (!r.ok) return null;
+    const j = await r.json();
+    const m = String(j.choices?.[0]?.message?.content || '').match(/\{[\s\S]*\}/);
+    if (!m) return null;
+    const o = JSON.parse(m[0]);
+    if (!/^\d{2}-\d{2}-\d{4}$/.test(o.date || '')) return null;
+    return { date: o.date, days: Math.min(Math.max(parseInt(o.days, 10) || 1, 1), 31) };
+  } catch { return null; } finally { clearTimeout(t); }
+}
+function shiftDate(ddmmyyyy, delta) {
+  const [dd, mm, yyyy] = ddmmyyyy.split('-').map(Number);
+  const d = new Date(yyyy, mm - 1, dd);
+  d.setDate(d.getDate() + delta);
+  return formatDateDDMMYYYY(d);
+}
 // ponytail: date ka record (invoices + files, link ke saath) — menu option 3 + AI dono use karte hain
 async function sendDateRecord(primaryJid, fallbackJid, target) {
+  return sendDateRecords(primaryJid, fallbackJid, [target]);
+}
+async function sendDateRecords(primaryJid, fallbackJid, targets) {
   const invList = await loadInvIndex();
-  const invHits = invList.filter(e => e.date === target).slice(0, 5);
+  let invHits = [];
+  targets.forEach(t => { invList.filter(e => e.date === t).slice(0, 5).forEach(e => invHits.push(e)); });
+  invHits = invHits.slice(0, 10);
   let fileHits = [];
   try {
     const sr = await cloudinary.search.expression('folder:live-tech-backup/*').sort_by('created_at', 'desc').max_results(100).execute();
-    fileHits = (sr.resources || []).filter(r => {
+    (sr.resources || []).forEach(r => {
       const d = new Date(r.created_at);
-      return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}` === target;
-    }).slice(0, 5);
+      const dd = `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
+      if (targets.includes(dd) && fileHits.length < 10) fileHits.push(r);
+    });
   } catch {}
+  await sendRecordMessage(primaryJid, fallbackJid, targets, invHits, fileHits);
+}
+async function sendRecordMessage(primaryJid, fallbackJid, targets, invHits, fileHits) {
   if (!invHits.length && !fileHits.length) {
-    await sendMessageSafe(primaryJid, fallbackJid, { text: `${target || 'Us din'} ka kuch nahi mila. Date DD-MM-YYYY me likho ya menu likho.` });
+    await sendMessageSafe(primaryJid, fallbackJid, { text: `${targets.join(', ') || 'Us din'} ka kuch nahi mila. Menu: menu` });
     return;
   }
-  let out = `${target} ka record:\n`;
-  invHits.forEach(e => { out += `🧾 #${e.no} | ${e.client || '—'}\n`; });
+  const label = targets.length > 1 ? `${targets[0]} se ${targets[targets.length - 1]} tak` : targets[0];
+  let out = `${label} ka record:\n`;
+  invHits.forEach(e => { out += `🧾 #${e.no} | ${e.client || '—'} | ${e.date || ''}\n`; });
   invHits.forEach(e => { if (e.public_id) out += `#${e.no}: ${vaultFileLink(e.public_id, e.rt || 'raw')}\n`; });
   fileHits.forEach(f => { out += `📁 ${f.public_id.split('/').pop()}: ${vaultFileLink(f.public_id, f.resource_type || 'raw')}\n`; });
   await sendMessageSafe(primaryJid, fallbackJid, { text: out });
@@ -726,7 +769,7 @@ async function aiIntent(text) {
       body: JSON.stringify({
         model: GROQ_MODEL, temperature: 0.2, max_tokens: 150,
         messages: [
-          { role: 'system', content: `Today is ${formatDateDDMMYYYY(new Date())}. You route messages for a backup/invoice WhatsApp bot (Roman Urdu + English). Reply ONLY JSON {"intent":"...","client":"","date":"","reply":""}. intents: backup (user wants to save/send a file), invoice_start (wants to MAKE a new invoice), invoice_search (asks about an existing invoice/bill — put client name or number in client), date_search (asks for files/invoices of a day — put date as DD-MM-YYYY in date, resolve today/yesterday), list (vault link), help, logout, smalltalk (greetings/thanks/ok/how-are-you — put 1-2 line friendly Roman Urdu in reply, else empty), unknown. Never invent numbers, links, or prices.` },
+          { role: 'system', content: `Today is ${formatDateDDMMYYYY(new Date())}. You route messages for a backup/invoice WhatsApp bot (Roman Urdu + English). Reply ONLY JSON {"intent":"...","client":"","date":"","days":1,"reply":""}. intents: backup (user wants to save/send a file), invoice_start (wants to MAKE a new invoice), invoice_search (asks about an existing invoice/bill — put client name or number in client), date_search (asks for files/invoices of days — put start date as DD-MM-YYYY in date and span in days: "5 din pehle" means date=5 days ago days=1, "pichle hafte ke" means date=7 days ago days=7, "pichle mahine ke" means date=30 days ago days=30), list (vault link), help, logout, smalltalk (greetings/thanks/ok/how-are-you — put 1-2 line friendly Roman Urdu in reply, else empty), unknown. Never invent numbers, links, or prices.` },
           { role: 'user', content: String(text).slice(0, 300) },
         ],
       }),
@@ -1083,15 +1126,23 @@ async function startBot() {
             await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
             continue;
           }
-          let target = null;
-          if (lower === 'today' || lower === 'aaj' || lower === 'aj') target = formatDateDDMMYYYY(new Date());
-          else if (lower === 'yesterday' || lower === 'kal') { const d = new Date(); d.setDate(d.getDate() - 1); target = formatDateDDMMYYYY(d); }
-          else target = parseDateInput(text);
-          if (!target) {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Date samajh nahi aayi. Today / Kal likho ya DD-MM-YYYY (jaise 04-09-2026). Menu: menu` });
+          let targets = [];
+          if (lower === 'today' || lower === 'aaj' || lower === 'aj') targets = [formatDateDDMMYYYY(new Date())];
+          else if (lower === 'yesterday' || lower === 'kal') { const d = new Date(); d.setDate(d.getDate() - 1); targets = [formatDateDDMMYYYY(d)]; }
+          else {
+            const rigid = parseDateInput(text);
+            if (rigid) targets = [rigid];
+            else {
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Samajh raha hun... 🔍` });
+              const aiD = await aiResolveDate(text);
+              if (aiD) { targets = []; for (let i = 0; i < aiD.days; i++) targets.push(shiftDate(aiD.date, i)); }
+            }
+          }
+          if (!targets.length) {
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Date samajh nahi aayi. "5 din pehle", "1 mahine pehle" ya DD-MM-YYYY likho. Menu: menu` });
             continue;
           }
-          await sendDateRecord(primaryJid, fallbackJid, target);
+          await sendDateRecords(primaryJid, fallbackJid, targets);
           state.mode = null;
           await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
           continue;
@@ -1281,7 +1332,14 @@ async function startBot() {
               await sendMessageSafe(primaryJid, fallbackJid, { text: out });
             }
           } else if (intent === 'date_search') {
-            await sendDateRecord(primaryJid, fallbackJid, String(ai.date || '').trim());
+            const d0 = String(ai.date || '').trim();
+            if (/^\d{2}-\d{2}-\d{4}$/.test(d0)) {
+              const n = Math.min(Math.max(parseInt(ai.days, 10) || 1, 1), 31);
+              const tg = []; for (let i = 0; i < n; i++) tg.push(shiftDate(d0, i));
+              await sendDateRecords(primaryJid, fallbackJid, tg);
+            } else {
+              await sendDateRecords(primaryJid, fallbackJid, []);
+            }
           } else if (intent === 'list') {
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Vault: ${VAULT_URL}\nCategories: ${(await getCats()).join(' | ')}` });
           } else if (intent === 'help') {
