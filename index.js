@@ -390,7 +390,29 @@ function getState(jid) {
 }
 
 function mainMenuText() {
-  return `Main Menu:\n1. Backup add karna (file bhejo)\n2. Invoice banana\n\n1 ya 2 bhejo`;
+  return `Main Menu:\n1. Backup add karna (file bhejo)\n2. Invoice banana\n3. Purane documents mangwana (date se)\n\n1, 2 ya 3 bhejo`;
+}
+// ponytail: date ka record (invoices + files, link ke saath) — menu option 3 + AI dono use karte hain
+async function sendDateRecord(primaryJid, fallbackJid, target) {
+  const invList = await loadInvIndex();
+  const invHits = invList.filter(e => e.date === target).slice(0, 5);
+  let fileHits = [];
+  try {
+    const sr = await cloudinary.search.expression('folder:live-tech-backup/*').sort_by('created_at', 'desc').max_results(100).execute();
+    fileHits = (sr.resources || []).filter(r => {
+      const d = new Date(r.created_at);
+      return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}` === target;
+    }).slice(0, 5);
+  } catch {}
+  if (!invHits.length && !fileHits.length) {
+    await sendMessageSafe(primaryJid, fallbackJid, { text: `${target || 'Us din'} ka kuch nahi mila. Date DD-MM-YYYY me likho ya menu likho.` });
+    return;
+  }
+  let out = `${target} ka record:\n`;
+  invHits.forEach(e => { out += `🧾 #${e.no} | ${e.client || '—'}\n`; });
+  invHits.forEach(e => { if (e.public_id) out += `#${e.no}: ${vaultFileLink(e.public_id, e.rt || 'raw')}\n`; });
+  fileHits.forEach(f => { out += `📁 ${f.public_id.split('/').pop()}: ${vaultFileLink(f.public_id, f.resource_type || 'raw')}\n`; });
+  await sendMessageSafe(primaryJid, fallbackJid, { text: out });
 }
 
 function formatDateDDMMYYYY(d) {
@@ -1054,8 +1076,29 @@ async function startBot() {
           }
         }
 
-        // ─── Main menu after login — 2 options ───
-        if (lower==='menu' || lower==='main' || lower==='1' || lower==='2' || lower==='backup' || lower.includes('invoice')) {
+        // ─── History mode — date aayi to record bhejo ───
+        if (!isGroup && state.mode === 'history') {
+          if (['menu', 'main', 'cancel', 'exit'].includes(lower)) {
+            state.mode = null;
+            await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
+            continue;
+          }
+          let target = null;
+          if (lower === 'today' || lower === 'aaj' || lower === 'aj') target = formatDateDDMMYYYY(new Date());
+          else if (lower === 'yesterday' || lower === 'kal') { const d = new Date(); d.setDate(d.getDate() - 1); target = formatDateDDMMYYYY(d); }
+          else target = parseDateInput(text);
+          if (!target) {
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Date samajh nahi aayi. Today / Kal likho ya DD-MM-YYYY (jaise 04-09-2026). Menu: menu` });
+            continue;
+          }
+          await sendDateRecord(primaryJid, fallbackJid, target);
+          state.mode = null;
+          await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
+          continue;
+        }
+
+        // ─── Main menu after login — 3 options ───
+        if (lower==='menu' || lower==='main' || lower==='1' || lower==='2' || lower==='3' || lower==='backup' || lower.includes('invoice') || lower.includes('purane') || lower.includes('history') || lower.includes('record')) {
           if (lower==='1' || lower==='backup' || lower==='1 backup') {
             state.mode='backup'; state.invoice=null;
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Backup mode on hai. Ab file bhejo (image, PDF, video, xlsx).` });
@@ -1068,6 +1111,11 @@ async function startBot() {
             }
             state.mode='invoice'; state.invoice={step:'date', date:'', invoiceNo:'', client:'', description:'', qty:'', rate:'', brand:'', discount:'0', items:[]};
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice banana shuru.\nDate bhejo - Today likho ya custom date (DD-MM-YYYY) bhejo` });
+            continue;
+          }
+          if (lower==='3' || lower.includes('purane') || lower.includes('history') || lower.includes('record')) {
+            state.mode='history'; state.invoice=null;
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Kis date ka record chahiye?\nToday / Kal likho ya DD-MM-YYYY bhejo (jaise 04-09-2026).\nMenu: menu` });
             continue;
           }
           // if just menu/help, show menu
@@ -1089,7 +1137,7 @@ async function startBot() {
         // ─── Logged in commands — smart ───
         if (lower === 'help' || lower === '?' || lower.includes('madad') || lower.includes('help')) {
           await sendMessageSafe(primaryJid, fallbackJid, {
-            text: `Help:\n1. File bhejo (image/PDF/video)\n2. Category number choose karo (list me se)\n3. Upload ho jayega + link milega\n\nCommands:\nhelp - ye message\nlist - vault link dekho\nlogout - bahar niklo\nmenu - main menu`
+            text: `Help:\n1. File bhejo (image/PDF/video)\n2. Category number choose karo (list me se)\n3. Upload ho jayega + link milega\n\nMenu: 1 backup • 2 invoice • 3 purane documents\nCommands:\nhelp - ye message\nlist - vault link dekho\nlogout - bahar niklo\nmenu - main menu`
           });
           continue;
         }
@@ -1233,30 +1281,11 @@ async function startBot() {
               await sendMessageSafe(primaryJid, fallbackJid, { text: out });
             }
           } else if (intent === 'date_search') {
-            const target = String(ai.date || '').trim();
-            const invList = await loadInvIndex();
-            const invHits = invList.filter(e => e.date === target).slice(0, 5);
-            let fileHits = [];
-            try {
-              const sr = await cloudinary.search.expression('folder:live-tech-backup/*').sort_by('created_at', 'desc').max_results(100).execute();
-              fileHits = (sr.resources || []).filter(r => {
-                const d = new Date(r.created_at);
-                return `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}` === target;
-              }).slice(0, 5);
-            } catch {}
-            if (!invHits.length && !fileHits.length) {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `${target || 'Us din'} ka kuch nahi mila. Date DD-MM-YYYY me likho.` });
-            } else {
-              let out = `${target} ka record:\n`;
-              invHits.forEach(e => { out += `🧾 #${e.no} | ${e.client || '—'}\n`; });
-              invHits.forEach(e => { if (e.public_id) out += `#${e.no}: ${vaultFileLink(e.public_id, e.rt || 'raw')}\n`; });
-              fileHits.forEach(f => { out += `📁 ${f.public_id.split('/').pop()}: ${vaultFileLink(f.public_id, f.resource_type || 'raw')}\n`; });
-              await sendMessageSafe(primaryJid, fallbackJid, { text: out });
-            }
+            await sendDateRecord(primaryJid, fallbackJid, String(ai.date || '').trim());
           } else if (intent === 'list') {
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Vault: ${VAULT_URL}\nCategories: ${(await getCats()).join(' | ')}` });
           } else if (intent === 'help') {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Help:\nFile bhejo (backup), 2 likho (invoice), invoice search ke liye client naam likho.\nCommands: help • list • logout • menu` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Help:\nFile bhejo (backup), 2 likho (invoice), 3 likho (purane documents), client naam likho (invoice search).\nCommands: help • list • logout • menu` });
           } else if (intent === 'logout') {
             state.loggedIn = false; state.invoice = null; state.mode = null; state._menuShown = false;
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Logout ho gaya. Dobara login ke liye password bhejo.` });
