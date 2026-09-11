@@ -5,21 +5,54 @@ tpl = sys.argv[1]
 out = sys.argv[2]
 data = json.loads(sys.argv[3])
 wb = openpyxl.load_workbook(tpl, keep_vba=False)
-# Keep only Sales Invoice
+# Kill external links + defined names FIRST (dangling refs = "repaired records" errors)
+try:
+    wb._external_links = []
+except:
+    pass
+try:
+    for n in list(wb.defined_names):
+        try:
+            del wb.defined_names[n]
+        except:
+            pass
+except:
+    pass
+# Keep only Sales Invoice (chartsheets ko pehle hatao, warna corrupt)
 keep='Sales Invoice'
-for name in list(wb.sheetnames):
-    if name!=keep:
-        ws=wb[name]
-        wb.remove(ws)
+try:
+    for name in list(wb.sheetnames):
+        if name != keep:
+            wsx = wb[name]
+            try:
+                wsx.sheet_state = 'visible'
+            except:
+                pass
+            wb.remove(wsx)
+except:
+    pass
 ws=wb[keep]
+# Active sheet fix (warna Excel ajeeb tab/zoom kholta hai)
+try:
+    wb.active = wb.sheetnames.index(keep)
+except:
+    pass
 # Remove images (2 logos on right) - clear _images
 try:
     ws._images = []
 except:
     pass
-# Fix AutoFilter/Table - remove to avoid Repaired Records error
+try:
+    ws._drawing = None
+except:
+    pass
+# Fix AutoFilter/Table - remove to avoid Repaired Records error (template ka filter toota hua hai)
 try:
     ws.auto_filter = None
+except:
+    pass
+try:
+    ws._auto_filter = None
 except:
     pass
 # Clear tables correctly (openpyxl _tables is dict-like)
@@ -37,6 +70,25 @@ try:
             ws.tables.clear()
         except:
             pass
+except:
+    pass
+# Clear data-validations + conditional formatting (purani refs = repair errors)
+try:
+    ws.data_validations.dataValidation = []
+except:
+    pass
+try:
+    if hasattr(ws.conditional_formatting, '_cf_rules'):
+        ws.conditional_formatting._cf_rules = {}
+except:
+    pass
+# Zoom normal (full-zoom bug fix) + gridlines on
+try:
+    ws.sheet_view.zoomScale = 100
+except:
+    pass
+try:
+    ws.sheet_view.zoomScaleNormal = 100
 except:
     pass
 # Hide extra rows 20-38
