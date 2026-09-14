@@ -307,78 +307,9 @@ async function uploadToCloudinary(buffer, filename, category) {
   throw lastErr;
 }
 
-// ─── Groq vision classify (group auto-categorize, JSON-only taake language se farq na pare) ───
+// ─── Groq (DM intent + date resolve; group me ab manual category sawal hai) ───
 const GROQ_API_KEY = process.env.GROQ_API_KEY || '';
 const GROQ_MODEL = process.env.GROQ_MODEL || 'qwen/qwen3.8-27b';
-async function classifyImage(buffer, mime, cats) {
-  if (!GROQ_API_KEY || !cats.length) return null;
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 60000);
-  try {
-    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: GROQ_MODEL, temperature: 0, max_tokens: 120,
-        messages: [{ role: 'user', content: [
-          { type: 'text', text: `Classify this image. Reply ONLY JSON {"seen":"short description","category":"exact match"} where category must be exactly one of: ${cats.join(', ')}. If unsure, reply exactly {"seen":"...","category":"UNKNOWN"}.` },
-          { type: 'image_url', image_url: { url: `data:${mime || 'image/jpeg'};base64,${buffer.toString('base64')}` } },
-        ] }],
-      }),
-      signal: ctrl.signal,
-    });
-    if (!r.ok) return null;
-    const j = await r.json();
-    const m = String(j.choices?.[0]?.message?.content || '').match(/\{[^}]*\}/);
-    if (!m) return null;
-    const o = JSON.parse(m[0]);
-    const hit = cats.find(c => c.toLowerCase() === String(o.category || '').toLowerCase());
-    if (!hit) return null;
-    return { cat: hit, seen: String(o.seen || 'file').slice(0, 80) };
-  } catch { return null; } finally { clearTimeout(t); }
-}
-
-// ponytail: PDF ka text padh ke classify (tasveer banane ki zarurat nahi, 0 transform cost)
-let pdfjsMod = null;
-async function extractPdfText(buffer, maxChars = 2000) {
-  try {
-    if (!pdfjsMod) pdfjsMod = await import('pdfjs-dist/legacy/build/pdf.mjs');
-    const doc = await pdfjsMod.getDocument({ data: new Uint8Array(buffer), isEvalSupported: false, useSystemFonts: true }).promise;
-    let out = '';
-    const pages = Math.min(doc.numPages || 0, 2);
-    for (let p = 1; p <= pages && out.length < maxChars; p++) {
-      const page = await doc.getPage(p);
-      const tc = await page.getTextContent();
-      out += (tc.items || []).map(it => it.str || '').join(' ') + '\n';
-    }
-    try { if (typeof doc.cleanup === 'function') await doc.cleanup(); } catch {}
-    return out.replace(/\s+/g, ' ').trim().slice(0, maxChars);
-  } catch { return ''; }
-}
-async function classifyText(snippet, cats) {
-  if (!GROQ_API_KEY || !snippet || snippet.length < 30 || !cats.length) return null;
-  const ctrl = new AbortController();
-  const t = setTimeout(() => ctrl.abort(), 45000);
-  try {
-    const r = await fetch('https://api.groq.com/openai/v1/chat/completions', {
-      method: 'POST',
-      headers: { Authorization: `Bearer ${GROQ_API_KEY}`, 'Content-Type': 'application/json' },
-      body: JSON.stringify({
-        model: GROQ_MODEL, temperature: 0, max_tokens: 60,
-        messages: [{ role: 'user', content: `This is text extracted from a business document. Reply ONLY JSON {"seen":"2-4 word summary","category":"exact match"} where category must be exactly one of: ${cats.join(', ')}. If unsure, reply exactly {"seen":"...","category":"UNKNOWN"}.\n\nDocument text:\n${snippet}` }],
-      }),
-      signal: ctrl.signal,
-    });
-    if (!r.ok) return null;
-    const j = await r.json();
-    const m = String(j.choices?.[0]?.message?.content || '').match(/\{[^}]*\}/);
-    if (!m) return null;
-    const o = JSON.parse(m[0]);
-    const hit = cats.find(c => c.toLowerCase() === String(o.category || '').toLowerCase());
-    if (!hit) return null;
-    return { cat: hit, seen: String(o.seen || 'document').slice(0, 80) };
-  } catch { return null; } finally { clearTimeout(t); }
-}
 
 function getState(jid) {
   const norm = jidNormalizedUser(jid);
@@ -733,6 +664,37 @@ async function nextPrompt(s) {
   const n = s.pendingQueue.length;
   return `File: ${f.filename}${n > 1 ? ` (1/${n} — baaki line me)` : ''} ready hai\n\n` + await catMenu();
 }
+// ponytail: group me fixed 6 backup categories — poori Vault list nahi, sirf yehi
+const GROUP_CATS = ['home exp', 'office exp', 'cheque', 'bank transaction', 'purchase', 'bill'];
+function groupCatPrompt(filename, n) {
+  const lines = [`File: ${filename}${n > 1 ? ` (1/${n} — baaki line me)` : ''}`, `Ye kis category me dalun? (IMAGE ko reply karke jawab do)\n`];
+  GROUP_CATS.forEach((c, i) => lines.push(`  ${i + 1}. ${c}`));
+  lines.push(`  0. Cancel (ye file rehne do)`);
+  lines.push(`\nNumber ya naam — jaise 1 ya home exp. Naam list me na ho to puchunga: nayi bana dun ya list se choose karo.`);
+  return lines.join('\n');
+}
+// quoted reply kis message ka jawab hai — image ka id ya bot ke sawal ka id
+function quotedTargetId(inner) {
+  return inner?.extendedTextMessage?.contextInfo?.stanzaId || null;
+}
+function matchGroupCat(t) {
+  const l = String(t || '').trim().toLowerCase();
+  return GROUP_CATS.find(c => c === l) || null;
+}
+// ponytail: group jawab ka shared upload — queue se nikaal ke Cloudinary, done msg
+async function saveGroupPending(primaryJid, fallbackJid, state, idx, cat) {
+  const cur = state.pendingQueue[idx];
+  if (!cur) return;
+  await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${cat} me save ho raha hai...` });
+  const fname = datedName(cur.filename);
+  const out = await uploadToCloudinary(cur.buffer, fname, cat);
+  noteNewCat(cat);
+  state.pendingQueue.splice(idx, 1);
+  let doneMsg = `Ho gaya!\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`;
+  const n = pendingCount(state);
+  if (n) doneMsg += `\n\n${n} aur baaki hain — unki image ko reply karke category batao.`;
+  await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
+}
 
 function cleanText(t) {
   return (t || '').trim();
@@ -785,12 +747,12 @@ async function aiIntent(text) {
 }
 
 // Robust send: tries primary JID then fallback, logs every attempt per official docs
-async function sendMessageSafe(primaryJid, fallbackJid, content) {
+async function sendMessageSafe(primaryJid, fallbackJid, content, extra) {
   const targets = [primaryJid, fallbackJid].filter(Boolean).filter((v, i, a) => a.indexOf(v) === i);
   let lastErr = null;
   for (const jid of targets) {
     try {
-      const res = await sock.sendMessage(jid, content);
+      const res = await sock.sendMessage(jid, content, extra);
       console.log(`✅ Sent to ${jid} ok=${!!res}`);
       return res;
     } catch (e) {
@@ -936,8 +898,62 @@ async function startBot() {
 
         await sleep(1000);
 
+        // ─── Group: IMAGE ko reply karke category — quoted jawab hi, beech ki chat ignore ───
+        if (isGroup && pendingCount(state) && text && !inner.imageMessage && !inner.documentMessage && !inner.videoMessage) {
+          const q = quotedTargetId(inner);
+          const gIdx = q ? state.pendingQueue.findIndex(f => f.fileMsgId === q || f.qid === q) : -1;
+          if (gIdx >= 0) {
+            const entry = state.pendingQueue[gIdx];
+            const GROUP_CANCEL = ['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'];
+            if (text.trim() === '0' || GROUP_CANCEL.includes(lower)) {
+              state.pendingQueue.splice(gIdx, 1);
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${entry.filename} upload nahi hui.` });
+              continue;
+            }
+            // nayi-category confirm ka jawab
+            if (entry.confirmCat) {
+              if (['haan', 'han', 'yes', 'ji', 'bana do', 'banado', 'banao'].includes(lower)) {
+                try { await saveGroupPending(primaryJid, fallbackJid, state, gIdx, entry.confirmCat); }
+                catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
+                continue;
+              }
+              entry.confirmCat = null; // list se pick — neeche normal flow
+            }
+            let pick = null;
+            if (/^\d+$/.test(text)) {
+              const num = parseInt(text, 10);
+              if (num >= 1 && num <= GROUP_CATS.length) pick = GROUP_CATS[num - 1];
+              else {
+                await sendMessageSafe(primaryJid, fallbackJid, { text: `Galat number. 1-${GROUP_CATS.length} ya naam reply karo, cancel ke liye 0.` }, { quoted: msg });
+                continue;
+              }
+            } else {
+              pick = matchGroupCat(text);
+            }
+            if (pick) {
+              try { await saveGroupPending(primaryJid, fallbackJid, state, gIdx, pick); }
+              catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
+              continue;
+            }
+            const raw = text.replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 30);
+            if (!raw) continue;
+            entry.confirmCat = raw;
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `'${raw}' list me nahi hai. Nayi category bana dun? 'haan' reply karo, ya list se number/naam bhejo (1-${GROUP_CATS.length}), cancel ke liye 0.` }, { quoted: msg });
+            continue;
+          }
+          // bina-quote: cancel purana behavior, command neeche, baaki beech ki chat khamosh
+          if (lower === '0' || ['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'].includes(lower)) {
+            const dropped = state.pendingQueue.shift();
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${dropped ? dropped.filename : ''} upload nahi hui.` });
+            continue;
+          }
+          const isCmd = /^(menu|main|help|\?|list|logout)$/.test(lower) || lower.includes('vault') || lower.includes('link');
+          if (!isCmd) continue;
+        }
+
         // ─── Number reply (for category selection) — line ki pehli file pe ───
         if (/^\d+$/.test(text) && pendingCount(state)) {
+          if (isGroup) continue; // group me sirf image ko quoted reply chalta hai (upar handle)
           const num = parseInt(text);
           const cats = await getCats();
           const cur = state.pendingQueue[0];
@@ -1210,6 +1226,7 @@ async function startBot() {
 
         // ─── Custom category name (when pending file) — line ki pehli file pe ───
         if (pendingCount(state) && text && !/^\d+$/.test(text)) {
+          if (isGroup) continue; // group me sirf image ko quoted reply chalta hai (upar handle)
           if (['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'].includes(lower)) {
             const dropped = state.pendingQueue.shift();
             let msg = `Rehne di ❌ ${dropped ? dropped.filename : ''} upload nahi hui.`;
@@ -1276,37 +1293,23 @@ async function startBot() {
               if (!filename.includes('.') && isImage) filename += '.jpg';
               if (!filename.includes('.') && isVideo) filename += '.mp4';
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
-              // Group: AI auto-categorize (image + key + 3.5MB se chhoti)
-              if (isGroup && isImage && GROQ_API_KEY && buffer.length < 3500000) {
-                await sendMessageSafe(primaryJid, fallbackJid, { text: `Dekh raha hun... 🔍` });
-                const guess = await classifyImage(buffer, inner.imageMessage?.mimetype, await getCats());
-                if (guess) {
-                  filename = datedName(filename);
-                  const out = await uploadToCloudinary(buffer, filename, guess.cat);
-                  noteNewCat(guess.cat);
-                  await sendMessageSafe(primaryJid, fallbackJid, {
-                    text: `🔍 ${guess.seen}\n${guess.cat} me save ✅\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
-                  });
-                  continue;
+              // Group: file aate hi sawal — IMAGE ko reply karke category batao (fixed 6)
+              if (isGroup) {
+                if (!state.pendingQueue) state.pendingQueue = [];
+                const entry = { buffer, filename, fileMsgId: msg.key?.id || null, qid: null, confirmCat: null };
+                state.pendingQueue.push(entry);
+                const qtext = groupCatPrompt(filename, state.pendingQueue.length);
+                try {
+                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: qtext }, { quoted: msg });
+                  entry.qid = sent?.key?.id || null;
+                } catch {
+                  await sendMessageSafe(primaryJid, fallbackJid, { text: qtext });
                 }
+              } else {
+                if (!state.pendingQueue) state.pendingQueue = [];
+                state.pendingQueue.push({ buffer, filename });
+                await sendMessageSafe(primaryJid, fallbackJid, { text: await nextPrompt(state) });
               }
-              // Group: PDF text classify (typed bills; scanned/photo-PDF → menu)
-              if (isGroup && isDoc && GROQ_API_KEY && /\.pdf$/i.test(filename) && buffer.length < 8000000) {
-                await sendMessageSafe(primaryJid, fallbackJid, { text: `Padh raha hun... 📄` });
-                const guess = await classifyText(await extractPdfText(buffer), await getCats());
-                if (guess) {
-                  filename = datedName(filename);
-                  const out = await uploadToCloudinary(buffer, filename, guess.cat);
-                  noteNewCat(guess.cat);
-                  await sendMessageSafe(primaryJid, fallbackJid, {
-                    text: `📄 ${guess.seen}\n${guess.cat} me save ✅\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
-                  });
-                  continue;
-                }
-              }
-              if (!state.pendingQueue) state.pendingQueue = [];
-              state.pendingQueue.push({ buffer, filename });
-              await sendMessageSafe(primaryJid, fallbackJid, { text: await nextPrompt(state) });
             } catch (e) {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `File read failed: ${e.message}` });
             }
