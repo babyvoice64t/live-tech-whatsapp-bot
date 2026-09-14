@@ -676,16 +676,42 @@ async function nextPrompt(s) {
   const n = s.pendingQueue.length;
   return `File: ${f.filename}${n > 1 ? ` (1/${n} — baaki line me)` : ''} ready hai\n\n` + await catMenu();
 }
-// ponytail: group me fixed 6 backup categories — poori Vault list nahi, sirf yehi
+// ponytail: group me fixed 6 + bani hui custom (poll max 12: 6 + 4 custom + new + cancel)
 const GROUP_CATS = ['home exp', 'office exp', 'cheque', 'bank transaction', 'purchase', 'bill'];
-// ponytail: group poll — 6 categories + new + cancel, single select, pehla vote wins
-const GROUP_POLL_OPTIONS = [...GROUP_CATS, 'new category', 'cancel'];
 const POLL_TIMEOUT_MS = 10 * 60 * 1000;
-function groupCatPrompt(filename, n) {
+const GROUP_SKIP = new Set(['invoice', 'system']);
+let groupCustomFirst = []; // is restart me bani — agle polls me sab se upar
+function noteGroupCustom(cat) {
+  const l = String(cat || '').toLowerCase();
+  if (!l || GROUP_CATS.some(c => c.toLowerCase() === l)) return;
+  groupCustomFirst = [cat, ...groupCustomFirst.filter(c => String(c).toLowerCase() !== l)].slice(0, 4);
+}
+async function groupChoiceList() {
+  const fixed = [...GROUP_CATS];
+  const have = new Set(fixed.map(c => c.toLowerCase()));
+  const out = [];
+  for (const c of groupCustomFirst) {
+    const l = String(c).toLowerCase();
+    if (!have.has(l) && !GROUP_SKIP.has(l)) { have.add(l); out.push(c); }
+  }
+  try {
+    for (const c of await getCats()) {
+      if (out.length >= 4) break;
+      const l = String(c).toLowerCase();
+      if (!have.has(l) && !GROUP_SKIP.has(l)) { have.add(l); out.push(c); }
+    }
+  } catch {}
+  return [...fixed, ...out.slice(0, 4)];
+}
+async function groupPollOptions() {
+  return [...await groupChoiceList(), 'new category', 'cancel'];
+}
+async function groupCatPrompt(filename, n) {
+  const choices = await groupChoiceList();
   const lines = [`File: ${filename}${n > 1 ? ` (1/${n} — baaki line me)` : ''}`, `Ye kis category me dalun? (IMAGE ko reply karke jawab do)\n`];
-  GROUP_CATS.forEach((c, i) => lines.push(`  ${i + 1}. ${c}`));
+  choices.forEach((c, i) => lines.push(`  ${i + 1}. ${c}`));
   lines.push(`  0. Cancel (ye file rehne do)`);
-  lines.push(`\nNumber ya naam — jaise 1 ya home exp. Naam list me na ho to puchunga: nayi bana dun ya list se choose karo.`);
+  lines.push(`\nNumber ya naam — jaise 1 ya home exp. 'new category' likho to nayi bana dunga. Naam list me na ho to puchunga: nayi bana dun ya list se choose karo.`);
   return lines.join('\n');
 }
 // quoted reply kis message ka jawab hai — image ka id ya bot ke sawal ka id
@@ -695,6 +721,14 @@ function quotedTargetId(inner) {
 function matchGroupCat(t) {
   const l = String(t || '').trim().toLowerCase();
   return GROUP_CATS.find(c => c === l) || null;
+}
+// ponytail: naam → fixed/custom/special (poll list ke hisab se)
+async function resolveGroupCat(t) {
+  const l = String(t || '').trim().toLowerCase();
+  if (!l) return null;
+  if (l === 'new category' || l === 'newcategory' || l === 'nayi category') return { special: 'new' };
+  const hit = (await groupChoiceList()).find(c => String(c).toLowerCase() === l);
+  return hit ? { cat: hit } : null;
 }
 // ponytail: group jawab ka shared upload — queue se nikaal ke Cloudinary, done msg
 async function saveGroupPending(primaryJid, fallbackJid, state, idx, cat) {
@@ -706,6 +740,7 @@ async function saveGroupPending(primaryJid, fallbackJid, state, idx, cat) {
     const fname = catDatedName(cat, cur.filename);
     const out = await uploadToCloudinary(cur.buffer, fname, cat);
     noteNewCat(cat);
+    noteGroupCustom(cat);
     state.pendingQueue.splice(idx, 1);
     let doneMsg = `Ho gaya!\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`;
     const n = pendingCount(state);
@@ -748,11 +783,12 @@ function decryptGroupVote(pollUpd, entry, voteMsg) {
   console.log(`🗳️ combos tried: creators=[${creators.join(',')}] voters=[${voters.join(',')}] lastErr=${lastErr}`);
   return null;
 }
-// ponytail: vote hash se option nikalo — index: 0-5 category, 6 new, 7 cancel
-function voteOptionIndex(dec) {
+// ponytail: vote hash se option nikalo — aakhri 2: new, cancel
+function voteOptionIndex(dec, options) {
+  const opts = options && options.length ? options : GROUP_CATS;
   const hashes = dec.selectedOptions || [];
-  for (let i = 0; i < GROUP_POLL_OPTIONS.length; i++) {
-    const h = pollOptionHash(GROUP_POLL_OPTIONS[i]);
+  for (let i = 0; i < opts.length; i++) {
+    const h = pollOptionHash(opts[i]);
     if (hashes.some(sh => Buffer.from(sh).equals(h))) return i;
   }
   return -1;
@@ -1004,12 +1040,13 @@ async function startBot() {
               const dec = decryptGroupVote(inner.pollUpdateMessage, entry, msg);
               if (!dec) console.log(`🗳️ vote decrypt FAILED`);
               if (dec) {
-                const optIdx = voteOptionIndex(dec);
+                const opts = entry.pollOptions && entry.pollOptions.length ? entry.pollOptions : GROUP_CATS;
+                const optIdx = voteOptionIndex(dec, opts);
                 console.log(`🗳️ vote decrypted optIdx=${optIdx}`);
-                if (optIdx >= 0 && optIdx <= 5) {
-                  try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, GROUP_CATS[optIdx]); }
+                if (optIdx >= 0 && optIdx < opts.length - 2) {
+                  try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, opts[optIdx]); }
                   catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
-                } else if (optIdx === 7) {
+                } else if (optIdx === opts.length - 1) {
                   found.state.pendingQueue.splice(found.idx, 1);
                   await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${entry.filename} upload nahi hui.` });
                 } else {
@@ -1064,13 +1101,19 @@ async function startBot() {
             let pick = null;
             if (/^\d+$/.test(text)) {
               const num = parseInt(text, 10);
-              if (num >= 1 && num <= GROUP_CATS.length) pick = GROUP_CATS[num - 1];
+              const choices = await groupChoiceList();
+              if (num >= 1 && num <= choices.length) pick = choices[num - 1];
               else {
-                await sendMessageSafe(primaryJid, fallbackJid, { text: `Galat number. 1-${GROUP_CATS.length} ya naam reply karo, cancel ke liye 0.` }, { quoted: msg });
+                await sendMessageSafe(primaryJid, fallbackJid, { text: `Galat number. 1-${choices.length} ya naam reply karo, cancel ke liye 0.` }, { quoted: msg });
                 continue;
               }
             } else {
-              pick = matchGroupCat(text);
+              const r = await resolveGroupCat(text);
+              if (r && r.special === 'new') {
+                await sendNewCategoryPrompt(primaryJid, fallbackJid, state, gIdx, null);
+                continue;
+              }
+              pick = r ? r.cat : null;
             }
             if (pick) {
               try { await saveGroupPending(primaryJid, fallbackJid, state, gIdx, pick); }
@@ -1080,12 +1123,14 @@ async function startBot() {
             const raw = text.replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 30);
             if (!raw) continue;
             entry.confirmCat = raw;
+            const cCount = (await groupChoiceList()).length;
+            const ctext = `'${raw}' list me nahi hai. Nayi category bana dun? 'haan' reply karo, ya list se number/naam bhejo (1-${cCount}), cancel ke liye 0.`;
             // ponytail: confirm ka id qid me — 'haan' isi ko reply hoga tabhi match karega
             try {
-              const csent = await sendMessageSafe(primaryJid, fallbackJid, { text: `'${raw}' list me nahi hai. Nayi category bana dun? 'haan' reply karo, ya list se number/naam bhejo (1-${GROUP_CATS.length}), cancel ke liye 0.` }, { quoted: msg });
+              const csent = await sendMessageSafe(primaryJid, fallbackJid, { text: ctext }, { quoted: msg });
               entry.qid = csent?.key?.id || entry.qid;
             } catch {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `'${raw}' list me nahi hai. Nayi category bana dun? 'haan' reply karo, ya list se number/naam bhejo (1-${GROUP_CATS.length}), cancel ke liye 0.` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: ctext });
             }
             continue;
           }
@@ -1428,6 +1473,8 @@ async function startBot() {
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
               filename = isGroup ? catDatedName(captionCat, filename) : datedName(filename);
               const out = await uploadToCloudinary(buffer, filename, captionCat);
+              noteNewCat(captionCat);
+              if (isGroup) noteGroupCustom(captionCat);
               await sendMessageSafe(primaryJid, fallbackJid, {
                 text: `Ho gaya!\nCategory: ${captionCat}\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
               });
@@ -1451,9 +1498,11 @@ async function startBot() {
                   // ponytail: secret khud banao — Baileys random banata hai aur wapas nahi deta
                   // ponytail: poll quote KE BAGHAIR — quoted poll desktop/Web pe render nahi hota (Baileys #675/#1732), naam me filename hai hi
                   const pollSecret = crypto.randomBytes(32);
-                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { poll: { name: `File: ${filename} — kis category me dalun?`, values: GROUP_POLL_OPTIONS, selectableCount: 1, messageSecret: pollSecret } });
+                  const pollOpts = await groupPollOptions();
+                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { poll: { name: `File: ${filename} — kis category me dalun?`, values: pollOpts, selectableCount: 1, messageSecret: pollSecret } });
                   entry.pollMsgId = sent?.key?.id || null;
                   entry.pollSecret = pollSecret;
+                  entry.pollOptions = pollOpts;
                   if (sent) messageStore.set(msgKeyId(sent.key), sent);
                   if (!entry.pollMsgId) throw new Error('poll043');
                 } catch {
@@ -1552,14 +1601,15 @@ async function startBot() {
         } catch {}
         const hit = agg.find(a => (a.voters || []).length > 0);
         if (!hit) continue;
-        const optIdx = GROUP_POLL_OPTIONS.findIndex(o => o === hit.name);
+        const opts = entry.pollOptions && entry.pollOptions.length ? entry.pollOptions : GROUP_CATS;
+        const optIdx = opts.findIndex(o => o === hit.name);
         if (optIdx < 0) continue;
         const primaryJid = key.remoteJidAlt || key.remoteJid;
         const fallbackJid = key.remoteJidAlt ? key.remoteJid : null;
-        if (optIdx <= 5) {
-          try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, GROUP_CATS[optIdx]); }
+        if (optIdx < opts.length - 2) {
+          try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, opts[optIdx]); }
           catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
-        } else if (optIdx === 7) {
+        } else if (optIdx === opts.length - 1) {
           found.state.pendingQueue.splice(found.idx, 1);
           await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${entry.filename} upload nahi hui.` });
         } else {
