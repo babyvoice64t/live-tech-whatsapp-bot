@@ -726,14 +726,16 @@ function decryptGroupVote(pollUpd, entry, voteMsg) {
   const uniq = (arr) => [...new Set(arr.filter(Boolean))];
   const creators = uniq([meId && jidNormalizedUser(meId), meLid && jidNormalizedUser(meLid)]);
   const voters = uniq([voter, jidNormalizedUser(voter), swap(voter), swap(jidNormalizedUser(voter))]);
+  let lastErr = '';
   for (const creator of creators) {
     for (const v of voters) {
       try {
         const dec = decryptPollVote(enc, { pollEncKey: entry.pollSecret, pollCreatorJid: creator, pollMsgId: entry.pollMsgId, voterJid: v });
         if (dec?.selectedOptions?.length) return dec;
-      } catch {}
+      } catch (e) { lastErr = String(e?.message || e).slice(0, 80); }
     }
   }
+  console.log(`🗳️ combos tried: creators=[${creators.join(',')}] voters=[${voters.join(',')}] lastErr=${lastErr}`);
   return null;
 }
 // ponytail: vote hash se option nikalo — index: 0-5 category, 6 new, 7 cancel
@@ -975,9 +977,12 @@ async function startBot() {
             if (found) {
               const entry = found.state.pendingQueue[found.idx];
               if (entry.busy) { continue; } // pehla vote/reply lock — double upload nahi
+              console.log(`🗳️ vote: poll=${inner.pollUpdateMessage.pollCreationMessageKey.id} voter=${msg.key?.participant || '?'} secret=${entry.pollSecret ? 'yes' : 'NO'} me=${sock?.user?.id || '?'} lid=${sock?.user?.lid || 'none'}`);
               const dec = decryptGroupVote(inner.pollUpdateMessage, entry, msg);
+              if (!dec) console.log(`🗳️ vote decrypt FAILED`);
               if (dec) {
                 const optIdx = voteOptionIndex(dec);
+                console.log(`🗳️ vote decrypted optIdx=${optIdx}`);
                 if (optIdx >= 0 && optIdx <= 5) {
                   try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, GROUP_CATS[optIdx]); }
                   catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
@@ -1414,12 +1419,13 @@ async function startBot() {
                 const entry = { buffer, filename, fileMsg: msg, fileMsgId: msg.key?.id || null, pollMsgId: null, pollSecret: null, qid: null, confirmCat: null, fallbackSent: false, busy: false, done: false, createdAt: Date.now() };
                 state.pendingQueue.push(entry);
                 try {
-                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { poll: { name: `File: ${filename} — kis category me dalun?`, values: GROUP_POLL_OPTIONS, selectableCount: 1 } }, { quoted: msg });
+                  // ponytail: secret khud banao — Baileys random banata hai aur wapas nahi deta
+                  const pollSecret = crypto.randomBytes(32);
+                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { poll: { name: `File: ${filename} — kis category me dalun?`, values: GROUP_POLL_OPTIONS, selectableCount: 1, messageSecret: pollSecret } }, { quoted: msg });
                   entry.pollMsgId = sent?.key?.id || null;
-                  const sec = sent?.messageContextInfo?.messageSecret;
-                  entry.pollSecret = sec ? Buffer.from(sec) : null;
+                  entry.pollSecret = pollSecret;
                   if (sent) messageStore.set(msgKeyId(sent.key), sent);
-                  if (!entry.pollMsgId || !entry.pollSecret) throw new Error('poll043');
+                  if (!entry.pollMsgId) throw new Error('poll043');
                 } catch {
                   await sendGroupTextFallback(primaryJid, fallbackJid, state, gIdx, null);
                 }
