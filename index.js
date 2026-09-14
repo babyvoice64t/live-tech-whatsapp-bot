@@ -659,6 +659,16 @@ function datedName(filename) {
   if (i <= 0) return `${filename}_${stamp}`;
   return `${filename.slice(0, i)}_${stamp}${filename.slice(i)}`;
 }
+// ponytail: group upload ka naam = category + aaj ki date (original naam nahi)
+function catDatedName(cat, filename) {
+  const d = new Date();
+  const stamp = `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
+  const f = String(filename || '');
+  const i = f.lastIndexOf('.');
+  const ext = i > 0 ? f.slice(i) : '.jpg';
+  const safe = String(cat || '').replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 40) || 'file';
+  return `${safe}_${stamp}${ext}`;
+}
 function pendingCount(s) { return (s.pendingQueue || []).length; }
 async function nextPrompt(s) {
   const f = s.pendingQueue[0];
@@ -693,7 +703,7 @@ async function saveGroupPending(primaryJid, fallbackJid, state, idx, cat) {
   cur.busy = true;
   try {
     await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${cat} me save ho raha hai...` });
-    const fname = datedName(cur.filename);
+    const fname = catDatedName(cat, cur.filename);
     const out = await uploadToCloudinary(cur.buffer, fname, cat);
     noteNewCat(cat);
     state.pendingQueue.splice(idx, 1);
@@ -1416,7 +1426,7 @@ async function startBot() {
               let filename = inner.documentMessage?.fileName || caption.split('\n')[0] || `file-${Date.now()}`;
               if (!filename.includes('.')) { if (isImage) filename += '.jpg'; else if (isDoc) filename += '.pdf'; else filename += '.bin'; }
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
-              filename = datedName(filename);
+              filename = isGroup ? catDatedName(captionCat, filename) : datedName(filename);
               const out = await uploadToCloudinary(buffer, filename, captionCat);
               await sendMessageSafe(primaryJid, fallbackJid, {
                 text: `Ho gaya!\nCategory: ${captionCat}\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
