@@ -1439,8 +1439,9 @@ async function startBot() {
                 state.pendingQueue.push(entry);
                 try {
                   // ponytail: secret khud banao — Baileys random banata hai aur wapas nahi deta
+                  // ponytail: poll quote KE BAGHAIR — quoted poll desktop/Web pe render nahi hota (Baileys #675/#1732), naam me filename hai hi
                   const pollSecret = crypto.randomBytes(32);
-                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { poll: { name: `File: ${filename} — kis category me dalun?`, values: GROUP_POLL_OPTIONS, selectableCount: 1, messageSecret: pollSecret } }, { quoted: msg });
+                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { poll: { name: `File: ${filename} — kis category me dalun?`, values: GROUP_POLL_OPTIONS, selectableCount: 1, messageSecret: pollSecret } });
                   entry.pollMsgId = sent?.key?.id || null;
                   entry.pollSecret = pollSecret;
                   if (sent) messageStore.set(msgKeyId(sent.key), sent);
