@@ -761,6 +761,19 @@ async function sendGroupTextFallback(primaryJid, fallbackJid, state, idx, note) 
     try { await sendMessageSafe(primaryJid, fallbackJid, { text: qtext }); } catch {}
   }
 }
+// ponytail: new-category vote pe alag Create message — naam isi ko reply karke
+async function sendNewCategoryPrompt(primaryJid, fallbackJid, state, idx, prefix) {
+  const entry = state.pendingQueue[idx];
+  if (!entry || entry.done) return;
+  entry.fallbackSent = true;
+  const qtext = (prefix ? prefix + '\n\n' : '') + `Create new category 📁\n\nFile: ${entry.filename}\nNayi category ka naam isi message ko reply karke bhejo.`;
+  try {
+    const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: qtext });
+    entry.qid = sent?.key?.id || entry.qid;
+  } catch {
+    try { await sendMessageSafe(primaryJid, fallbackJid, { text: qtext }); } catch {}
+  }
+}
 // ponytail: pollMsgId se entry dhoondo (saari chats me — vote update ke liye)
 function findPollEntry(pollMsgId) {
   for (const s of userState.values()) {
@@ -990,8 +1003,8 @@ async function startBot() {
                   found.state.pendingQueue.splice(found.idx, 1);
                   await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${entry.filename} upload nahi hui.` });
                 } else {
-                  // new category jeeta — naam mango (reply fallback sawal se, quoted)
-                  await sendGroupTextFallback(primaryJid, fallbackJid, found.state, found.idx, `'new category' vote mila — naam batao:`);
+                  // new category jeeta — alag Create message, naam isi ko reply
+                  await sendNewCategoryPrompt(primaryJid, fallbackJid, found.state, found.idx, null);
                 }
               } else {
                 // vote samajh nahi aaya — silent reply fallback
@@ -1057,7 +1070,13 @@ async function startBot() {
             const raw = text.replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 30);
             if (!raw) continue;
             entry.confirmCat = raw;
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `'${raw}' list me nahi hai. Nayi category bana dun? 'haan' reply karo, ya list se number/naam bhejo (1-${GROUP_CATS.length}), cancel ke liye 0.` }, { quoted: msg });
+            // ponytail: confirm ka id qid me — 'haan' isi ko reply hoga tabhi match karega
+            try {
+              const csent = await sendMessageSafe(primaryJid, fallbackJid, { text: `'${raw}' list me nahi hai. Nayi category bana dun? 'haan' reply karo, ya list se number/naam bhejo (1-${GROUP_CATS.length}), cancel ke liye 0.` }, { quoted: msg });
+              entry.qid = csent?.key?.id || entry.qid;
+            } catch {
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `'${raw}' list me nahi hai. Nayi category bana dun? 'haan' reply karo, ya list se number/naam bhejo (1-${GROUP_CATS.length}), cancel ke liye 0.` });
+            }
             continue;
           }
           // bina-quote: cancel purana behavior, command neeche, baaki beech ki chat khamosh
@@ -1533,7 +1552,7 @@ async function startBot() {
           found.state.pendingQueue.splice(found.idx, 1);
           await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${entry.filename} upload nahi hui.` });
         } else {
-          await sendGroupTextFallback(primaryJid, fallbackJid, found.state, found.idx, `'new category' vote mila — naam batao:`);
+          await sendNewCategoryPrompt(primaryJid, fallbackJid, found.state, found.idx, null);
         }
       }
     } catch (e) { console.error('poll update error:', e.message); }
