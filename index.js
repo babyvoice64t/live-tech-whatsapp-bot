@@ -7,7 +7,9 @@ import makeWASocket, {
   Browsers,
   isJidBroadcast,
   isLidUser,
-  jidNormalizedUser
+  jidNormalizedUser,
+  decryptPollVote,
+  getAggregateVotesInPollMessage
 } from '@whiskeysockets/baileys';
 import express from 'express';
 import pino from 'pino';
@@ -666,6 +668,9 @@ async function nextPrompt(s) {
 }
 // ponytail: group me fixed 6 backup categories — poori Vault list nahi, sirf yehi
 const GROUP_CATS = ['home exp', 'office exp', 'cheque', 'bank transaction', 'purchase', 'bill'];
+// ponytail: group poll — 6 categories + new + cancel, single select, pehla vote wins
+const GROUP_POLL_OPTIONS = [...GROUP_CATS, 'new category', 'cancel'];
+const POLL_TIMEOUT_MS = 10 * 60 * 1000;
 function groupCatPrompt(filename, n) {
   const lines = [`File: ${filename}${n > 1 ? ` (1/${n} — baaki line me)` : ''}`, `Ye kis category me dalun? (IMAGE ko reply karke jawab do)\n`];
   GROUP_CATS.forEach((c, i) => lines.push(`  ${i + 1}. ${c}`));
@@ -684,16 +689,83 @@ function matchGroupCat(t) {
 // ponytail: group jawab ka shared upload — queue se nikaal ke Cloudinary, done msg
 async function saveGroupPending(primaryJid, fallbackJid, state, idx, cat) {
   const cur = state.pendingQueue[idx];
-  if (!cur) return;
-  await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${cat} me save ho raha hai...` });
-  const fname = datedName(cur.filename);
-  const out = await uploadToCloudinary(cur.buffer, fname, cat);
-  noteNewCat(cat);
-  state.pendingQueue.splice(idx, 1);
-  let doneMsg = `Ho gaya!\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`;
+  if (!cur || cur.busy) return;
+  cur.busy = true;
+  try {
+    await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${cat} me save ho raha hai...` });
+    const fname = datedName(cur.filename);
+    const out = await uploadToCloudinary(cur.buffer, fname, cat);
+    noteNewCat(cat);
+    state.pendingQueue.splice(idx, 1);
+    let doneMsg = `Ho gaya!\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`;
+    const n = pendingCount(state);
+    if (n) doneMsg += `\n\n${n} aur baaki hain — unke poll me vote karo.`;
+    await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
+  } catch (e) {
+    cur.busy = false;
+    throw e;
+  }
+}
+// ponytail: poll option ka SHA-256 hash — vote hashes se milao (Baileys jaisa)
+function pollOptionHash(name) {
+  return crypto.createHash('sha256').update(String(name), 'utf8').digest();
+}
+// ponytail: poll secret + JID combos (PN/LID) try karke vote decrypt
+function decryptGroupVote(pollUpd, entry, voteMsg) {
+  const enc = pollUpd.vote;
+  if (!enc || !entry.pollSecret) return null;
+  const meId = sock?.user?.id || '';
+  const meLid = sock?.user?.lid || '';
+  const voter = voteMsg.key?.participant || voteMsg.key?.remoteJid || '';
+  const swap = (j) => {
+    const m = String(j).match(/^([^@]+)@(.+)$/);
+    if (!m) return null;
+    const other = m[2] === 'lid' ? 's.whatsapp.net' : (m[2] === 's.whatsapp.net' ? 'lid' : null);
+    return other ? `${m[1]}@${other}` : null;
+  };
+  const uniq = (arr) => [...new Set(arr.filter(Boolean))];
+  const creators = uniq([meId && jidNormalizedUser(meId), meLid && jidNormalizedUser(meLid)]);
+  const voters = uniq([voter, jidNormalizedUser(voter), swap(voter), swap(jidNormalizedUser(voter))]);
+  for (const creator of creators) {
+    for (const v of voters) {
+      try {
+        const dec = decryptPollVote(enc, { pollEncKey: entry.pollSecret, pollCreatorJid: creator, pollMsgId: entry.pollMsgId, voterJid: v });
+        if (dec?.selectedOptions?.length) return dec;
+      } catch {}
+    }
+  }
+  return null;
+}
+// ponytail: vote hash se option nikalo — index: 0-5 category, 6 new, 7 cancel
+function voteOptionIndex(dec) {
+  const hashes = dec.selectedOptions || [];
+  for (let i = 0; i < GROUP_POLL_OPTIONS.length; i++) {
+    const h = pollOptionHash(GROUP_POLL_OPTIONS[i]);
+    if (hashes.some(sh => Buffer.from(sh).equals(h))) return i;
+  }
+  return -1;
+}
+// ponytail: poll fail/timeout pe silent reply fallback (file ko quote karke sawal)
+async function sendGroupTextFallback(primaryJid, fallbackJid, state, idx, note) {
+  const entry = state.pendingQueue[idx];
+  if (!entry || entry.done) return;
+  entry.fallbackSent = true;
   const n = pendingCount(state);
-  if (n) doneMsg += `\n\n${n} aur baaki hain — unki image ko reply karke category batao.`;
-  await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
+  const qtext = (note ? note + '\n\n' : '') + groupCatPrompt(entry.filename, n);
+  try {
+    const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: qtext }, entry.fileMsg ? { quoted: entry.fileMsg } : undefined);
+    entry.qid = sent?.key?.id || null;
+  } catch {
+    try { await sendMessageSafe(primaryJid, fallbackJid, { text: qtext }); } catch {}
+  }
+}
+// ponytail: pollMsgId se entry dhoondo (saari chats me — vote update ke liye)
+function findPollEntry(pollMsgId) {
+  for (const s of userState.values()) {
+    const idx = (s.pendingQueue || []).findIndex(f => f.pollMsgId === pollMsgId && !f.done);
+    if (idx >= 0) return { state: s, idx };
+  }
+  return null;
 }
 
 function cleanText(t) {
@@ -896,14 +968,56 @@ async function startBot() {
         );
         const lower = text.toLowerCase();
 
+        // ─── Poll vote (group) — pehla vote wins, decrypt fail to reply fallback ───
+        if (inner.pollUpdateMessage?.pollCreationMessageKey?.id) {
+          if (isGroup) {
+            const found = findPollEntry(inner.pollUpdateMessage.pollCreationMessageKey.id);
+            if (found) {
+              const entry = found.state.pendingQueue[found.idx];
+              if (entry.busy) { continue; } // pehla vote/reply lock — double upload nahi
+              const dec = decryptGroupVote(inner.pollUpdateMessage, entry, msg);
+              if (dec) {
+                const optIdx = voteOptionIndex(dec);
+                if (optIdx >= 0 && optIdx <= 5) {
+                  try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, GROUP_CATS[optIdx]); }
+                  catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
+                } else if (optIdx === 7) {
+                  found.state.pendingQueue.splice(found.idx, 1);
+                  await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${entry.filename} upload nahi hui.` });
+                } else {
+                  // new category jeeta — naam mango (reply fallback sawal se, quoted)
+                  await sendGroupTextFallback(primaryJid, fallbackJid, found.state, found.idx, `'new category' vote mila — naam batao:`);
+                }
+              } else {
+                // vote samajh nahi aaya — silent reply fallback
+                await sendGroupTextFallback(primaryJid, fallbackJid, found.state, found.idx, `Vote samajh nahi aaya ⚠️`);
+              }
+            }
+          }
+          continue;
+        }
+
+        // ─── Poll timeout — 10 min me vote na aye to reply fallback ───
+        if (isGroup && pendingCount(state)) {
+          const now = Date.now();
+          for (let ti = 0; ti < state.pendingQueue.length; ti++) {
+            const e = state.pendingQueue[ti];
+            if (!e.done && !e.fallbackSent && e.pollMsgId && now - (e.createdAt || now) > POLL_TIMEOUT_MS) {
+              await sendGroupTextFallback(primaryJid, fallbackJid, state, ti, `Vote nahi mila ⏰`);
+            }
+          }
+        }
+
         await sleep(1000);
 
-        // ─── Group: IMAGE ko reply karke category — quoted jawab hi, beech ki chat ignore ───
+        // ─── Group: IMAGE ko reply karke category — silent fallback, sirf poll fail pe ───
         if (isGroup && pendingCount(state) && text && !inner.imageMessage && !inner.documentMessage && !inner.videoMessage) {
           const q = quotedTargetId(inner);
-          const gIdx = q ? state.pendingQueue.findIndex(f => f.fileMsgId === q || f.qid === q) : -1;
+          // reply-to-file tabhi jab poll fail ho chuka (fallbackSent), reply-to-sawal hamesha
+          const gIdx = q ? state.pendingQueue.findIndex(f => (f.qid && f.qid === q) || (f.fallbackSent && f.fileMsgId === q)) : -1;
           if (gIdx >= 0) {
             const entry = state.pendingQueue[gIdx];
+            if (entry.busy) continue; // upload in flight — pehla wins
             const GROUP_CANCEL = ['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'];
             if (text.trim() === '0' || GROUP_CANCEL.includes(lower)) {
               state.pendingQueue.splice(gIdx, 1);
@@ -1293,17 +1407,21 @@ async function startBot() {
               if (!filename.includes('.') && isImage) filename += '.jpg';
               if (!filename.includes('.') && isVideo) filename += '.mp4';
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
-              // Group: file aate hi sawal — IMAGE ko reply karke category batao (fixed 6)
+              // Group: file aate hi POLL — vote karo, fail ho to reply fallback (silent)
               if (isGroup) {
                 if (!state.pendingQueue) state.pendingQueue = [];
-                const entry = { buffer, filename, fileMsgId: msg.key?.id || null, qid: null, confirmCat: null };
+                const gIdx = state.pendingQueue.length;
+                const entry = { buffer, filename, fileMsg: msg, fileMsgId: msg.key?.id || null, pollMsgId: null, pollSecret: null, qid: null, confirmCat: null, fallbackSent: false, busy: false, done: false, createdAt: Date.now() };
                 state.pendingQueue.push(entry);
-                const qtext = groupCatPrompt(filename, state.pendingQueue.length);
                 try {
-                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: qtext }, { quoted: msg });
-                  entry.qid = sent?.key?.id || null;
+                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { poll: { name: `File: ${filename} — kis category me dalun?`, values: GROUP_POLL_OPTIONS, selectableCount: 1 } }, { quoted: msg });
+                  entry.pollMsgId = sent?.key?.id || null;
+                  const sec = sent?.messageContextInfo?.messageSecret;
+                  entry.pollSecret = sec ? Buffer.from(sec) : null;
+                  if (sent) messageStore.set(msgKeyId(sent.key), sent);
+                  if (!entry.pollMsgId || !entry.pollSecret) throw new Error('poll043');
                 } catch {
-                  await sendMessageSafe(primaryJid, fallbackJid, { text: qtext });
+                  await sendGroupTextFallback(primaryJid, fallbackJid, state, gIdx, null);
                 }
               } else {
                 if (!state.pendingQueue) state.pendingQueue = [];
@@ -1380,6 +1498,39 @@ async function startBot() {
         } catch {}
       }
     }
+  });
+
+  // ─── Poll votes via messages.update (agar Baileys auto-decrypt emit kare — bonus path) ───
+  sock.ev.on('messages.update', async (updates) => {
+    try {
+      for (const { key, update } of updates || []) {
+        if (!update?.pollUpdates?.length) continue;
+        const found = findPollEntry(key.id);
+        if (!found) continue;
+        const entry = found.state.pendingQueue[found.idx];
+        if (entry.busy) continue;
+        const creation = messageStore.get(msgKeyId(key));
+        let agg = [];
+        try {
+          agg = getAggregateVotesInPollMessage({ message: creation?.message, pollUpdates: update.pollUpdates }, sock?.user?.id) || [];
+        } catch {}
+        const hit = agg.find(a => (a.voters || []).length > 0);
+        if (!hit) continue;
+        const optIdx = GROUP_POLL_OPTIONS.findIndex(o => o === hit.name);
+        if (optIdx < 0) continue;
+        const primaryJid = key.remoteJidAlt || key.remoteJid;
+        const fallbackJid = key.remoteJidAlt ? key.remoteJid : null;
+        if (optIdx <= 5) {
+          try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, GROUP_CATS[optIdx]); }
+          catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
+        } else if (optIdx === 7) {
+          found.state.pendingQueue.splice(found.idx, 1);
+          await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${entry.filename} upload nahi hui.` });
+        } else {
+          await sendGroupTextFallback(primaryJid, fallbackJid, found.state, found.idx, `'new category' vote mila — naam batao:`);
+        }
+      }
+    } catch (e) { console.error('poll update error:', e.message); }
   });
 }
 
