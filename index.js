@@ -205,6 +205,21 @@ app.get('/api/categories', async (req, res) => {
   res.json({ categories: await getCats() });
 });
 
+// Poll categories for Vault admin — admin portal se set, WhatsApp poll wahi dikhega
+app.get('/api/poll-config', async (req, res) => {
+  if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
+  res.json({ categories: await loadPollConfig() });
+});
+app.post('/api/poll-config', async (req, res) => {
+  if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
+  try {
+    const cats = req.body?.categories;
+    if (!Array.isArray(cats)) return res.status(400).json({ error: 'categories[] bhejo' });
+    const saved = await savePollConfig(cats);
+    res.json({ ok: true, categories: saved });
+  } catch (e) { res.status(400).json({ error: e.message || 'save failed' }); }
+});
+
 // Invoice history for Vault dashboard — no, client, date, total (password/token)
 app.get('/api/invoices', async (req, res) => {
   if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
@@ -676,42 +691,43 @@ async function nextPrompt(s) {
   const n = s.pendingQueue.length;
   return `File: ${f.filename}${n > 1 ? ` (1/${n} — baaki line me)` : ''} ready hai\n\n` + await catMenu();
 }
-// ponytail: group me fixed 6 + bani hui custom (poll max 12: 6 + 4 custom + new + cancel)
+// ponytail: poll categories = admin portal se (Cloudinary JSON), fallback GROUP_CATS
 const GROUP_CATS = ['home exp', 'office exp', 'cheque', 'bank transaction', 'purchase', 'bill'];
 const POLL_TIMEOUT_MS = 10 * 60 * 1000;
-const GROUP_SKIP = new Set(['invoice', 'system']);
-let groupCustomFirst = []; // is restart me bani — agle polls me sab se upar
-function noteGroupCustom(cat) {
-  const l = String(cat || '').toLowerCase();
-  if (!l || GROUP_CATS.some(c => c.toLowerCase() === l)) return;
-  groupCustomFirst = [cat, ...groupCustomFirst.filter(c => String(c).toLowerCase() !== l)].slice(0, 4);
-}
-async function groupChoiceList() {
-  const fixed = [...GROUP_CATS];
-  const have = new Set(fixed.map(c => c.toLowerCase()));
-  const out = [];
-  for (const c of groupCustomFirst) {
-    const l = String(c).toLowerCase();
-    if (!have.has(l) && !GROUP_SKIP.has(l)) { have.add(l); out.push(c); }
-  }
+const POLL_CONFIG_PID = 'live-tech-backup/system/poll-config';
+let pollConfigCache = { list: [...GROUP_CATS], ts: 0 };
+async function loadPollConfig() {
+  if (Date.now() - pollConfigCache.ts < 60000) return pollConfigCache.list;
   try {
-    for (const c of await getCats()) {
-      if (out.length >= 4) break;
-      const l = String(c).toLowerCase();
-      if (!have.has(l) && !GROUP_SKIP.has(l)) { have.add(l); out.push(c); }
+    const info = await cloudinary.api.resource(POLL_CONFIG_PID, { resource_type: 'raw' });
+    const url = info.secure_url || info.url;
+    if (url) {
+      const r = await fetch(url, { cache: 'no-store' });
+      if (r.ok) { const j = await r.json(); if (Array.isArray(j) && j.length) pollConfigCache = { list: j.slice(0, 12), ts: Date.now() }; }
     }
   } catch {}
-  return [...fixed, ...out.slice(0, 4)];
+  return pollConfigCache.list;
 }
+async function savePollConfig(list) {
+  const clean = [...new Set((Array.isArray(list) ? list : []).map(s => String(s || '').trim().replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 30)).filter(Boolean))].slice(0, 12);
+  if (!clean.length) throw new Error('koi category nahi');
+  const dataUri = `data:application/json;base64,${Buffer.from(JSON.stringify(clean)).toString('base64')}`;
+  await cloudinary.uploader.upload(dataUri, { public_id: POLL_CONFIG_PID, resource_type: 'raw', overwrite: true, invalidate: true });
+  pollConfigCache = { list: clean, ts: Date.now() };
+  return clean;
+}
+async function groupChoiceList() { return [...await loadPollConfig()]; }
 async function groupPollOptions() {
-  return [...await groupChoiceList(), 'new category', 'cancel'];
+  const base = await loadPollConfig();
+  // admin list + cancel (new category hataya — admin se hi banao)
+  return [...base.slice(0, 11), 'cancel'];
 }
 async function groupCatPrompt(filename, n) {
   const choices = await groupChoiceList();
   const lines = [`File: ${filename}${n > 1 ? ` (1/${n} — baaki line me)` : ''}`, `Ye kis category me dalun? (IMAGE ko reply karke jawab do)\n`];
   choices.forEach((c, i) => lines.push(`  ${i + 1}. ${c}`));
   lines.push(`  0. Cancel (ye file rehne do)`);
-  lines.push(`\nNumber ya naam — jaise 1 ya home exp. 'new category' likho to nayi bana dunga. Naam list me na ho to puchunga: nayi bana dun ya list se choose karo.`);
+  lines.push(`\nNumber ya naam — jaise 1 ya home exp. Admin ne categories Vault se set ki hain.`);
   return lines.join('\n');
 }
 // quoted reply kis message ka jawab hai — image ka id ya bot ke sawal ka id
@@ -722,11 +738,10 @@ function matchGroupCat(t) {
   const l = String(t || '').trim().toLowerCase();
   return GROUP_CATS.find(c => c === l) || null;
 }
-// ponytail: naam → fixed/custom/special (poll list ke hisab se)
+// ponytail: naam → poll list ke hisab se (new category ab nahi)
 async function resolveGroupCat(t) {
   const l = String(t || '').trim().toLowerCase();
   if (!l) return null;
-  if (l === 'new category' || l === 'newcategory' || l === 'nayi category') return { special: 'new' };
   const hit = (await groupChoiceList()).find(c => String(c).toLowerCase() === l);
   return hit ? { cat: hit } : null;
 }
@@ -740,7 +755,6 @@ async function saveGroupPending(primaryJid, fallbackJid, state, idx, cat) {
     const fname = catDatedName(cat, cur.filename);
     const out = await uploadToCloudinary(cur.buffer, fname, cat);
     noteNewCat(cat);
-    noteGroupCustom(cat);
     state.pendingQueue.splice(idx, 1);
     let doneMsg = `Ho gaya!\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`;
     const n = pendingCount(state);
@@ -1040,18 +1054,15 @@ async function startBot() {
               const dec = decryptGroupVote(inner.pollUpdateMessage, entry, msg);
               if (!dec) console.log(`🗳️ vote decrypt FAILED`);
               if (dec) {
-                const opts = entry.pollOptions && entry.pollOptions.length ? entry.pollOptions : GROUP_CATS;
+                const opts = entry.pollOptions && entry.pollOptions.length ? entry.pollOptions : await loadPollConfig();
                 const optIdx = voteOptionIndex(dec, opts);
                 console.log(`🗳️ vote decrypted optIdx=${optIdx}`);
-                if (optIdx >= 0 && optIdx < opts.length - 2) {
-                  try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, opts[optIdx]); }
-                  catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
-                } else if (optIdx === opts.length - 1) {
+                if (opts[optIdx] === 'cancel') {
                   found.state.pendingQueue.splice(found.idx, 1);
                   await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${entry.filename} upload nahi hui.` });
-                } else {
-                  // new category jeeta — alag Create message, naam isi ko reply
-                  await sendNewCategoryPrompt(primaryJid, fallbackJid, found.state, found.idx, null);
+                } else if (optIdx >= 0) {
+                  try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, opts[optIdx]); }
+                  catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
                 }
               } else {
                 // vote samajh nahi aaya — silent reply fallback
@@ -1108,30 +1119,14 @@ async function startBot() {
                 continue;
               }
             } else {
-              const r = await resolveGroupCat(text);
-              if (r && r.special === 'new') {
-                await sendNewCategoryPrompt(primaryJid, fallbackJid, state, gIdx, null);
-                continue;
-              }
-              pick = r ? r.cat : null;
+              pick = (await resolveGroupCat(text))?.cat || null;
             }
             if (pick) {
               try { await saveGroupPending(primaryJid, fallbackJid, state, gIdx, pick); }
               catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
               continue;
             }
-            const raw = text.replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 30);
-            if (!raw) continue;
-            entry.confirmCat = raw;
-            const cCount = (await groupChoiceList()).length;
-            const ctext = `'${raw}' list me nahi hai. Nayi category bana dun? 'haan' reply karo, ya list se number/naam bhejo (1-${cCount}), cancel ke liye 0.`;
-            // ponytail: confirm ka id qid me — 'haan' isi ko reply hoga tabhi match karega
-            try {
-              const csent = await sendMessageSafe(primaryJid, fallbackJid, { text: ctext }, { quoted: msg });
-              entry.qid = csent?.key?.id || entry.qid;
-            } catch {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: ctext });
-            }
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `List me nahi — Vault admin se nayi category banao. 1-${(await groupChoiceList()).length} ya naam reply karo, cancel 0.` }, { quoted: msg });
             continue;
           }
           // bina-quote: cancel purana behavior, command neeche, baaki beech ki chat khamosh
@@ -1464,17 +1459,16 @@ async function startBot() {
           }
           const dlMsg = { ...msg, message: inner };
 
-          if (captionCat) {
+          if (captionCat && !isGroup) {
             try {
               await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${captionCat} me save ho raha hai...` });
               const buffer = await downloadMediaMessage(dlMsg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
               let filename = inner.documentMessage?.fileName || caption.split('\n')[0] || `file-${Date.now()}`;
               if (!filename.includes('.')) { if (isImage) filename += '.jpg'; else if (isDoc) filename += '.pdf'; else filename += '.bin'; }
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
-              filename = isGroup ? catDatedName(captionCat, filename) : datedName(filename);
+              filename = datedName(filename);
               const out = await uploadToCloudinary(buffer, filename, captionCat);
               noteNewCat(captionCat);
-              if (isGroup) noteGroupCustom(captionCat);
               await sendMessageSafe(primaryJid, fallbackJid, {
                 text: `Ho gaya!\nCategory: ${captionCat}\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
               });
@@ -1601,19 +1595,17 @@ async function startBot() {
         } catch {}
         const hit = agg.find(a => (a.voters || []).length > 0);
         if (!hit) continue;
-        const opts = entry.pollOptions && entry.pollOptions.length ? entry.pollOptions : GROUP_CATS;
+        const opts = entry.pollOptions && entry.pollOptions.length ? entry.pollOptions : await loadPollConfig();
         const optIdx = opts.findIndex(o => o === hit.name);
         if (optIdx < 0) continue;
         const primaryJid = key.remoteJidAlt || key.remoteJid;
         const fallbackJid = key.remoteJidAlt ? key.remoteJid : null;
-        if (optIdx < opts.length - 2) {
-          try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, opts[optIdx]); }
-          catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
-        } else if (optIdx === opts.length - 1) {
+        if (hit.name === 'cancel') {
           found.state.pendingQueue.splice(found.idx, 1);
           await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${entry.filename} upload nahi hui.` });
         } else {
-          await sendNewCategoryPrompt(primaryJid, fallbackJid, found.state, found.idx, null);
+          try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, hit.name); }
+          catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
         }
       }
     } catch (e) { console.error('poll update error:', e.message); }
