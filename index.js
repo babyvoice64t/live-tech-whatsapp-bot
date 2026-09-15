@@ -666,18 +666,18 @@ async function catMenu() {
   lines.push(`\nNumber bhejo ya naam likho - jaise 1 ya Invoice, cancel ke liye 0`);
   return lines.join('\n');
 }
-// ponytail: har backup file pe aaj ki date + line-wise queue (ek-ek karke)
+// ponytail: har backup file pe aaj ki date + HH-mm-ss (same-day Cloudinary overwrite rokne ko)
 function datedName(filename) {
   const d = new Date();
-  const stamp = `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
+  const stamp = `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}_${String(d.getHours()).padStart(2, '0')}-${String(d.getMinutes()).padStart(2, '0')}-${String(d.getSeconds()).padStart(2, '0')}`;
   const i = filename.lastIndexOf('.');
   if (i <= 0) return `${filename}_${stamp}`;
   return `${filename.slice(0, i)}_${stamp}${filename.slice(i)}`;
 }
-// ponytail: group upload ka naam = category + aaj ki date (original naam nahi)
+// ponytail: group upload ka naam = category + DD-MM-YYYY_HH-mm-ss (same-second collide = overwrite tha)
 function catDatedName(cat, filename) {
   const d = new Date();
-  const stamp = `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}`;
+  const stamp = `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}_${String(d.getHours()).padStart(2, '0')}-${String(d.getMinutes()).padStart(2, '0')}-${String(d.getSeconds()).padStart(2, '0')}`;
   const f = String(filename || '');
   const i = f.lastIndexOf('.');
   const ext = i > 0 ? f.slice(i) : '.jpg';
