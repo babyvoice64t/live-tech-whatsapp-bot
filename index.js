@@ -674,14 +674,16 @@ function datedName(filename) {
   if (i <= 0) return `${filename}_${stamp}`;
   return `${filename.slice(0, i)}_${stamp}${filename.slice(i)}`;
 }
-// ponytail: group upload ka naam = category + DD-MM-YYYY_HH-mm-ss (same-second collide = overwrite tha)
-function catDatedName(cat, filename) {
+// ponytail: group upload ka naam = category + custom-naam + DD-MM-YYYY_HH-mm-ss (custom khali to purana format)
+function catDatedName(cat, filename, custom) {
   const d = new Date();
   const stamp = `${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}_${String(d.getHours()).padStart(2, '0')}-${String(d.getMinutes()).padStart(2, '0')}-${String(d.getSeconds()).padStart(2, '0')}`;
   const f = String(filename || '');
   const i = f.lastIndexOf('.');
   const ext = i > 0 ? f.slice(i) : '.jpg';
   const safe = String(cat || '').replace(/[^a-zA-Z0-9 _-]/g, '').slice(0, 40) || 'file';
+  const cn = String(custom || '').replace(/[^a-zA-Z0-9 _-]/g, '').trim().slice(0, 40);
+  if (cn) return `${safe}_${cn}_${stamp}${ext}`;
   return `${safe}_${stamp}${ext}`;
 }
 function pendingCount(s) { return (s.pendingQueue || []).length; }
@@ -752,7 +754,7 @@ async function saveGroupPending(primaryJid, fallbackJid, state, idx, cat) {
   cur.busy = true;
   try {
     await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${cat} me save ho raha hai...` });
-    const fname = catDatedName(cat, cur.filename);
+    const fname = catDatedName(cat, cur.filename, cur.customName);
     const out = await uploadToCloudinary(cur.buffer, fname, cat);
     noteNewCat(cat);
     state.pendingQueue.splice(idx, 1);
@@ -763,6 +765,27 @@ async function saveGroupPending(primaryJid, fallbackJid, state, idx, cat) {
   } catch (e) {
     cur.busy = false;
     throw e;
+  }
+}
+// ponytail: group file pe pehle NAAM pucho, naam milte hi category poll bhejo (caption me naam ho to direct poll)
+function cleanGroupName(t) {
+  return String(t || '').replace(/[^a-zA-Z0-9 _-]/g, '').trim().slice(0, 40);
+}
+async function sendGroupPollFor(primaryJid, fallbackJid, state, idx) {
+  const entry = state.pendingQueue[idx];
+  if (!entry || entry.pollMsgId || entry.busy || entry.done) return;
+  const label = entry.customName || entry.filename;
+  try {
+    const pollSecret = crypto.randomBytes(32);
+    const pollOpts = await groupPollOptions();
+    const sent = await sendMessageSafe(primaryJid, fallbackJid, { poll: { name: `File: ${label} — kis category me dalun?`, values: pollOpts, selectableCount: 1, messageSecret: pollSecret } });
+    entry.pollMsgId = sent?.key?.id || null;
+    entry.pollSecret = pollSecret;
+    entry.pollOptions = pollOpts;
+    if (sent) messageStore.set(msgKeyId(sent.key), sent);
+    if (!entry.pollMsgId) throw new Error('poll043');
+  } catch {
+    await sendGroupTextFallback(primaryJid, fallbackJid, state, idx, null);
   }
 }
 // ponytail: poll option ka SHA-256 hash — vote hashes se milao (Baileys jaisa)
@@ -813,7 +836,7 @@ async function sendGroupTextFallback(primaryJid, fallbackJid, state, idx, note) 
   if (!entry || entry.done) return;
   entry.fallbackSent = true;
   const n = pendingCount(state);
-  const qtext = (note ? note + '\n\n' : '') + groupCatPrompt(entry.filename, n);
+  const qtext = (note ? note + '\n\n' : '') + groupCatPrompt(entry.customName || entry.filename, n);
   try {
     const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: qtext }, entry.fileMsg ? { quoted: entry.fileMsg } : undefined);
     entry.qid = sent?.key?.id || null;
@@ -1073,12 +1096,15 @@ async function startBot() {
           continue;
         }
 
-        // ─── Poll timeout — 10 min me vote na aye to reply fallback ───
+        // ─── Poll timeout — 10 min me vote na aye to reply fallback; naam na aye to original naam se poll ───
         if (isGroup && pendingCount(state)) {
           const now = Date.now();
           for (let ti = 0; ti < state.pendingQueue.length; ti++) {
             const e = state.pendingQueue[ti];
-            if (!e.done && !e.fallbackSent && e.pollMsgId && now - (e.createdAt || now) > POLL_TIMEOUT_MS) {
+            if (!e.done && e.awaitingName && !e.pollMsgId && now - (e.createdAt || now) > POLL_TIMEOUT_MS) {
+              e.awaitingName = false;
+              await sendGroupPollFor(primaryJid, fallbackJid, state, ti);
+            } else if (!e.done && !e.fallbackSent && e.pollMsgId && now - (e.createdAt || now) > POLL_TIMEOUT_MS) {
               await sendGroupTextFallback(primaryJid, fallbackJid, state, ti, `Vote nahi mila ⏰`);
             }
           }
@@ -1086,9 +1112,28 @@ async function startBot() {
 
         await sleep(1000);
 
-        // ─── Group: IMAGE ko reply karke category — silent fallback, sirf poll fail pe ───
+        // ─── Group: FILE ko reply karke NAAM, phir category — naam wali entry pehle ───
         if (isGroup && pendingCount(state) && text && !inner.imageMessage && !inner.documentMessage && !inner.videoMessage) {
           const q = quotedTargetId(inner);
+          // naam-step: FILE ya naam-sawal ko reply, poll se pehle (awaitingName)
+          const nIdx = q ? state.pendingQueue.findIndex(f => f.awaitingName && !f.pollMsgId && !f.done && ((f.nameQid && f.nameQid === q) || (f.fileMsgId && f.fileMsgId === q))) : -1;
+          if (nIdx >= 0) {
+            const entry = state.pendingQueue[nIdx];
+            const GROUP_CANCEL = ['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'];
+            if (text.trim() === '0' || GROUP_CANCEL.includes(lower)) {
+              state.pendingQueue.splice(nIdx, 1);
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${entry.filename} upload nahi hui.` });
+              continue;
+            }
+            const nm = cleanGroupName(text);
+            if (!nm || nm.length < 2) {
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Naam chota hai — 2+ lafz likho, misal: blc ya blue light computer (0 = cancel)` }, { quoted: msg });
+              continue;
+            }
+            entry.customName = nm; entry.awaitingName = false;
+            await sendGroupPollFor(primaryJid, fallbackJid, state, nIdx);
+            continue;
+          }
           // reply-to-file tabhi jab poll fail ho chuka (fallbackSent), reply-to-sawal hamesha
           const gIdx = q ? state.pendingQueue.findIndex(f => (f.qid && f.qid === q) || (f.fallbackSent && f.fileMsgId === q)) : -1;
           if (gIdx >= 0) {
@@ -1482,25 +1527,24 @@ async function startBot() {
               if (!filename.includes('.') && isImage) filename += '.jpg';
               if (!filename.includes('.') && isVideo) filename += '.mp4';
               filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
-              // Group: file aate hi POLL — vote karo, fail ho to reply fallback (silent)
+              // Group: pehle NAAM — FILE ko reply karke naam likho, phir category POLL (caption me naam ho to direct poll)
               if (isGroup) {
                 if (!state.pendingQueue) state.pendingQueue = [];
                 const gIdx = state.pendingQueue.length;
-                const entry = { buffer, filename, fileMsg: msg, fileMsgId: msg.key?.id || null, pollMsgId: null, pollSecret: null, qid: null, confirmCat: null, fallbackSent: false, busy: false, done: false, createdAt: Date.now() };
+                const entry = { buffer, filename, customName: null, awaitingName: true, fileMsg: msg, fileMsgId: msg.key?.id || null, pollMsgId: null, pollSecret: null, qid: null, nameQid: null, confirmCat: null, fallbackSent: false, busy: false, done: false, createdAt: Date.now() };
                 state.pendingQueue.push(entry);
-                try {
-                  // ponytail: secret khud banao — Baileys random banata hai aur wapas nahi deta
-                  // ponytail: poll quote KE BAGHAIR — quoted poll desktop/Web pe render nahi hota (Baileys #675/#1732), naam me filename hai hi
-                  const pollSecret = crypto.randomBytes(32);
-                  const pollOpts = await groupPollOptions();
-                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { poll: { name: `File: ${filename} — kis category me dalun?`, values: pollOpts, selectableCount: 1, messageSecret: pollSecret } });
-                  entry.pollMsgId = sent?.key?.id || null;
-                  entry.pollSecret = pollSecret;
-                  entry.pollOptions = pollOpts;
-                  if (sent) messageStore.set(msgKeyId(sent.key), sent);
-                  if (!entry.pollMsgId) throw new Error('poll043');
-                } catch {
-                  await sendGroupTextFallback(primaryJid, fallbackJid, state, gIdx, null);
+                const capName = (!captionCat && caption) ? cleanGroupName(caption.split('\n')[0]) : '';
+                if (capName && capName.length >= 2) {
+                  entry.customName = capName; entry.awaitingName = false;
+                  await sendGroupPollFor(primaryJid, fallbackJid, state, gIdx);
+                } else {
+                  try {
+                    const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: `File mili ✅ ${filename}\nPehle iska NAAM likho — FILE ko reply karke bhejo, misal: blc ya blue light computer\n(0 likho to cancel)` }, { quoted: msg });
+                    entry.nameQid = sent?.key?.id || null;
+                  } catch {
+                    const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: `File mili ✅ ${filename}\nPehle iska NAAM likho — FILE ko reply karke bhejo, misal: blc ya blue light computer\n(0 likho to cancel)` });
+                    entry.nameQid = sent?.key?.id || null;
+                  }
                 }
               } else {
                 if (!state.pendingQueue) state.pendingQueue = [];
