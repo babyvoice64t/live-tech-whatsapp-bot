@@ -1127,7 +1127,7 @@ async function startBot() {
             }
             const nm = cleanGroupName(text);
             if (!nm || nm.length < 2) {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Naam chota hai — 2+ lafz likho, misal: blc ya blue light computer (0 = cancel)` }, { quoted: msg });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Naam chota hai — misal: blc (0 = cancel)` });
               continue;
             }
             entry.customName = nm; entry.awaitingName = false;
@@ -1538,13 +1538,9 @@ async function startBot() {
                   entry.customName = capName; entry.awaitingName = false;
                   await sendGroupPollFor(primaryJid, fallbackJid, state, gIdx);
                 } else {
-                  try {
-                    const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: `File mili ✅ ${filename}\nPehle iska NAAM likho — FILE ko reply karke bhejo, misal: blc ya blue light computer\n(0 likho to cancel)` }, { quoted: msg });
-                    entry.nameQid = sent?.key?.id || null;
-                  } catch {
-                    const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: `File mili ✅ ${filename}\nPehle iska NAAM likho — FILE ko reply karke bhejo, misal: blc ya blue light computer\n(0 likho to cancel)` });
-                    entry.nameQid = sent?.key?.id || null;
-                  }
+                  // ponytail: quote KE BAGHAIR plain sawal — quoted file (viewOnce/caption wrap) Web/Desktop pe render nahi hota, plain har client pe dikhta hai
+                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: `📄 ${filename}\nNaam likho (FILE ko reply) — misal: blc\n0 = cancel` });
+                  entry.nameQid = sent?.key?.id || null;
                 }
               } else {
                 if (!state.pendingQueue) state.pendingQueue = [];
