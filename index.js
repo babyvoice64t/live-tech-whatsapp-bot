@@ -1539,7 +1539,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
                   await sendGroupPollFor(primaryJid, fallbackJid, state, gIdx);
                 } else {
                   // ponytail: quote KE BAGHAIR plain sawal — quoted file (viewOnce/caption wrap) Web/Desktop pe render nahi hota, plain har client pe dikhta hai
-                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: `${filename}\nNaam likho (FILE ko reply) — misal: blc\n0 = cancel` });
+                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: `📁 *File ka naam likhein*\nCancel karne ke liye *0* bhejein.` });
                   entry.nameQid = sent?.key?.id || null;
                 }
               } else {
