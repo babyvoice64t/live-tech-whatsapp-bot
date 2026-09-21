@@ -400,9 +400,9 @@ async function sendRecordMessage(primaryJid, fallbackJid, targets, invHits, file
   }
   const label = targets.length > 1 ? `${targets[0]} se ${targets[targets.length - 1]} tak` : targets[0];
   let out = `${label} ka record:\n`;
-  invHits.forEach(e => { out += `🧾 #${e.no} | ${e.client || '—'} | ${e.date || ''}\n`; });
+  invHits.forEach(e => { out += `#${e.no} | ${e.client || '—'} | ${e.date || ''}\n`; });
   invHits.forEach(e => { if (e.public_id) out += `#${e.no}: ${vaultFileLink(e.public_id, e.rt || 'raw')}\n`; });
-  fileHits.forEach(f => { out += `📁 ${f.public_id.split('/').pop()}: ${vaultFileLink(f.public_id, f.resource_type || 'raw')}\n`; });
+  fileHits.forEach(f => { out += `${f.public_id.split('/').pop()}: ${vaultFileLink(f.public_id, f.resource_type || 'raw')}\n`; });
   await sendMessageSafe(primaryJid, fallbackJid, { text: out });
 }
 
@@ -662,8 +662,8 @@ async function catMenu() {
   let lines = ['Category choose karo:\n'];
   cats.forEach((c, i) => lines.push(`  ${i + 1}. ${c}`));
   lines.push(`  ${cats.length + 1}. New Category (apna naam likho)`);
-  lines.push(`  0. Cancel (ye file rehne do, upload mat karo)`);
-  lines.push(`\nNumber bhejo ya naam likho - jaise 1 ya Invoice, cancel ke liye 0`);
+  lines.push(`  0. Cancel`);
+  lines.push(`\nNumber bhejo ya naam likho, cancel ke liye 0`);
   return lines.join('\n');
 }
 // ponytail: har backup file pe aaj ki date + HH-mm-ss (same-day Cloudinary overwrite rokne ko)
@@ -778,7 +778,7 @@ async function sendGroupPollFor(primaryJid, fallbackJid, state, idx) {
   try {
     const pollSecret = crypto.randomBytes(32);
     const pollOpts = await groupPollOptions();
-    const sent = await sendMessageSafe(primaryJid, fallbackJid, { poll: { name: `File: ${label} — kis category me dalun?`, values: pollOpts, selectableCount: 1, messageSecret: pollSecret } });
+    const sent = await sendMessageSafe(primaryJid, fallbackJid, { poll: { name: `${label} — category select karo`, values: pollOpts, selectableCount: 1, messageSecret: pollSecret } });
     entry.pollMsgId = sent?.key?.id || null;
     entry.pollSecret = pollSecret;
     entry.pollOptions = pollOpts;
@@ -849,7 +849,7 @@ async function sendNewCategoryPrompt(primaryJid, fallbackJid, state, idx, prefix
   const entry = state.pendingQueue[idx];
   if (!entry || entry.done) return;
   entry.fallbackSent = true;
-  const qtext = (prefix ? prefix + '\n\n' : '') + `Create new category 📁\n\nFile: ${entry.filename}\nNayi category ka naam isi message ko reply karke bhejo.`;
+  const qtext = (prefix ? prefix + '\n\n' : '') + `Nayi category banao\n\nFile: ${entry.filename}\nCategory ka naam isi message ko reply karke bhejo.`;
   try {
     const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: qtext });
     entry.qid = sent?.key?.id || entry.qid;
@@ -1082,14 +1082,14 @@ async function startBot() {
                 console.log(`🗳️ vote decrypted optIdx=${optIdx}`);
                 if (opts[optIdx] === 'cancel') {
                   found.state.pendingQueue.splice(found.idx, 1);
-                  await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${entry.filename} upload nahi hui.` });
+                  await sendMessageSafe(primaryJid, fallbackJid, { text: `Skip: ${entry.filename} upload nahi hui.` });
                 } else if (optIdx >= 0) {
                   try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, opts[optIdx]); }
                   catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
                 }
               } else {
                 // vote samajh nahi aaya — silent reply fallback
-                await sendGroupTextFallback(primaryJid, fallbackJid, found.state, found.idx, `Vote samajh nahi aaya ⚠️`);
+                await sendGroupTextFallback(primaryJid, fallbackJid, found.state, found.idx, `Vote samajh nahi aaya.`);
               }
             }
           }
@@ -1122,7 +1122,7 @@ async function startBot() {
             const GROUP_CANCEL = ['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'];
             if (text.trim() === '0' || GROUP_CANCEL.includes(lower)) {
               state.pendingQueue.splice(nIdx, 1);
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${entry.filename} upload nahi hui.` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Skip: ${entry.filename} upload nahi hui.` });
               continue;
             }
             const nm = cleanGroupName(text);
@@ -1142,7 +1142,7 @@ async function startBot() {
             const GROUP_CANCEL = ['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'];
             if (text.trim() === '0' || GROUP_CANCEL.includes(lower)) {
               state.pendingQueue.splice(gIdx, 1);
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${entry.filename} upload nahi hui.` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Skip: ${entry.filename} upload nahi hui.` });
               continue;
             }
             // nayi-category confirm ka jawab
@@ -1177,7 +1177,7 @@ async function startBot() {
           // bina-quote: cancel purana behavior, command neeche, baaki beech ki chat khamosh
           if (lower === '0' || ['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'].includes(lower)) {
             const dropped = state.pendingQueue.shift();
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${dropped ? dropped.filename : ''} upload nahi hui.` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Skip: ${dropped ? dropped.filename : ''} upload nahi hui.` });
             continue;
           }
           const isCmd = /^(menu|main|help|\?|list|logout)$/.test(lower) || lower.includes('vault') || lower.includes('link');
@@ -1197,7 +1197,7 @@ async function startBot() {
               const fname = datedName(cur.filename);
               const out = await uploadToCloudinary(cur.buffer, fname, cat);
               state.pendingQueue.shift();
-              let doneMsg = `Ho gaya!\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`;
+let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`;
               if (pendingCount(state)) doneMsg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
               await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
             } catch (e) {
@@ -1207,7 +1207,7 @@ async function startBot() {
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Nayi category ka naam likh ke bhejo (jaise: My Files)` });
           } else if (num === 0) {
             const dropped = state.pendingQueue.shift();
-            let msg = `Rehne di ❌ ${dropped ? dropped.filename : ''} upload nahi hui.`;
+            let msg = `Skip: ${dropped ? dropped.filename : ''} upload nahi hui.`;
             if (pendingCount(state)) msg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
             await sendMessageSafe(primaryJid, fallbackJid, { text: msg });
           } else {
@@ -1388,7 +1388,7 @@ async function startBot() {
             const rigid = parseDateInput(text);
             if (rigid) targets = [rigid];
             else {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Samajh raha hun... 🔍` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Samajh raha hun...` });
               const aiD = await aiResolveDate(text);
               if (aiD) { targets = []; for (let i = 0; i < aiD.days; i++) targets.push(shiftDate(aiD.date, i)); }
             }
@@ -1462,7 +1462,7 @@ async function startBot() {
           if (isGroup) continue; // group me sirf image ko quoted reply chalta hai (upar handle)
           if (['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'].includes(lower)) {
             const dropped = state.pendingQueue.shift();
-            let msg = `Rehne di ❌ ${dropped ? dropped.filename : ''} upload nahi hui.`;
+            let msg = `Skip: ${dropped ? dropped.filename : ''} upload nahi hui.`;
             if (pendingCount(state)) msg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
             await sendMessageSafe(primaryJid, fallbackJid, { text: msg });
             continue;
@@ -1539,7 +1539,7 @@ async function startBot() {
                   await sendGroupPollFor(primaryJid, fallbackJid, state, gIdx);
                 } else {
                   // ponytail: quote KE BAGHAIR plain sawal — quoted file (viewOnce/caption wrap) Web/Desktop pe render nahi hota, plain har client pe dikhta hai
-                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: `📄 ${filename}\nNaam likho (FILE ko reply) — misal: blc\n0 = cancel` });
+                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: `${filename}\nNaam likho (FILE ko reply) — misal: blc\n0 = cancel` });
                   entry.nameQid = sent?.key?.id || null;
                 }
               } else {
@@ -1642,7 +1642,7 @@ async function startBot() {
         const fallbackJid = key.remoteJidAlt ? key.remoteJid : null;
         if (hit.name === 'cancel') {
           found.state.pendingQueue.splice(found.idx, 1);
-          await sendMessageSafe(primaryJid, fallbackJid, { text: `Rehne di ❌ ${entry.filename} upload nahi hui.` });
+          await sendMessageSafe(primaryJid, fallbackJid, { text: `Skip: ${entry.filename} upload nahi hui.` });
         } else {
           try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, hit.name); }
           catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
