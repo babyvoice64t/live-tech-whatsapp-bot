@@ -318,10 +318,15 @@ async function uploadToCloudinary(buffer, filename, category) {
       const transient = /slow down|rate limit|capac|timeout|temporar|econn|socket|network|fetch failed/.test(msg) || (e.http_code && (e.http_code === 429 || e.http_code >= 500));
       console.error(`Cloudinary try ${i + 1}/3 fail:`, e.message);
       if (!transient || i === 2) throw new Error(e.error?.message || e.message || 'cloudinary failed');
-      await sleep(i === 0 ? 2000 : 5000);
+      await sleep(i === 0 ? 3000 : 8000);
     }
   }
   throw lastErr;
+}
+function friendlyUploadErr(e) {
+  const m = String(e?.error?.message || e?.message || '').toLowerCase();
+  if (m.includes('slow down') || m.includes('processing capacity') || m.includes('capac') || m.includes('rate limit')) return 'Server busy hai — 30 sec baad dobara vote karo, file line me safe hai.';
+  return `Upload failed: ${e.message}`;
 }
 
 // ─── Groq (DM intent + date resolve; group me ab manual category sawal hai) ───
@@ -758,7 +763,7 @@ async function saveGroupPending(primaryJid, fallbackJid, state, idx, cat) {
     const out = await uploadToCloudinary(cur.buffer, fname, cat);
     noteNewCat(cat);
     state.pendingQueue.splice(idx, 1);
-    let doneMsg = `Ho gaya!\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`;
+    let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`;
     const n = pendingCount(state);
     if (n) doneMsg += `\n\n${n} aur baaki hain — unke poll me vote karo.`;
     await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
@@ -1085,7 +1090,7 @@ async function startBot() {
                   await sendMessageSafe(primaryJid, fallbackJid, { text: `Skip: ${entry.filename} upload nahi hui.` });
                 } else if (optIdx >= 0) {
                   try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, opts[optIdx]); }
-                  catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
+                  catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) }); }
                 }
               } else {
                 // vote samajh nahi aaya — silent reply fallback
@@ -1149,7 +1154,7 @@ async function startBot() {
             if (entry.confirmCat) {
               if (['haan', 'han', 'yes', 'ji', 'bana do', 'banado', 'banao'].includes(lower)) {
                 try { await saveGroupPending(primaryJid, fallbackJid, state, gIdx, entry.confirmCat); }
-                catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
+                catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) }); }
                 continue;
               }
               entry.confirmCat = null; // list se pick — neeche normal flow
@@ -1168,7 +1173,7 @@ async function startBot() {
             }
             if (pick) {
               try { await saveGroupPending(primaryJid, fallbackJid, state, gIdx, pick); }
-              catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
+              catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) }); }
               continue;
             }
             await sendMessageSafe(primaryJid, fallbackJid, { text: `List me nahi — Vault admin se nayi category banao. 1-${(await groupChoiceList()).length} ya naam reply karo, cancel 0.` }, { quoted: msg });
@@ -1178,6 +1183,10 @@ async function startBot() {
           if (lower === '0' || ['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'].includes(lower)) {
             const dropped = state.pendingQueue.shift();
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Skip: ${dropped ? dropped.filename : ''} upload nahi hui.` });
+            continue;
+          }
+          if (['retry','dobara','phir se','retry karo'].includes(lower) && pendingCount(state)) {
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Dobara try karo — isi poll pe vote karo ya file ko reply karke category likho. File line me safe hai.` });
             continue;
           }
           const isCmd = /^(menu|main|help|\?|list|logout)$/.test(lower) || lower.includes('vault') || lower.includes('link');
@@ -1201,7 +1210,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
               if (pendingCount(state)) doneMsg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
               await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
             } catch (e) {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) });
             }
           } else if (num === cats.length + 1) {
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Nayi category ka naam likh ke bhejo (jaise: My Files)` });
@@ -1480,7 +1489,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
               if (pendingCount(state)) doneMsg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
               await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
             } catch (e) {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) });
             }
             continue;
           }
@@ -1518,7 +1527,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
                 text: `Ho gaya!\nCategory: ${captionCat}\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
               });
             } catch (e) {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) });
             }
           } else {
             try {
@@ -1645,7 +1654,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
           await sendMessageSafe(primaryJid, fallbackJid, { text: `Skip: ${entry.filename} upload nahi hui.` });
         } else {
           try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, hit.name); }
-          catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Upload failed: ${e.message}` }); }
+          catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) }); }
         }
       }
     } catch (e) { console.error('poll update error:', e.message); }
