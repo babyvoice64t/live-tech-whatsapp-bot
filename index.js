@@ -226,6 +226,25 @@ app.get('/api/invoices', async (req, res) => {
   res.json({ invoices: await loadInvIndex() });
 });
 
+// Invoice entry forget — vault delete pe index se hatado (cache bhi fresh)
+app.post('/api/invoice-forget', async (req, res) => {
+  if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
+  const pid = String(req.body?.public_id || '');
+  if (!pid) return res.status(400).json({ error: 'public_id required' });
+  try {
+    const list = await loadInvIndex();
+    const i = list.findIndex(x => String(x.public_id) === pid);
+    if (i < 0) return res.json({ ok: true, found: false });
+    list.splice(i, 1);
+    const dataUri = `data:application/json;base64,${Buffer.from(JSON.stringify(list.slice(0, 500))).toString('base64')}`;
+    await cloudinary.uploader.upload(dataUri, { public_id: INVOICES_PID, resource_type: 'raw', overwrite: true, unique_filename: false, use_filename: false });
+    invIndexCache = { list, ts: Date.now() };
+    res.json({ ok: true, found: true });
+  } catch (e) {
+    res.status(500).json({ error: e.message });
+  }
+});
+
 // Invoice meta for Vault dashboard — next no + clients (same source as bot)
 app.get('/api/invoice-meta', (req, res) => {
   if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
