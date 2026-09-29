@@ -256,7 +256,7 @@ app.post('/api/invoice', async (req, res) => {
     const b64 = excelBuf.toString('base64');
     const dataUri = `data:application/vnd.openxmlformats-officedocument.spreadsheetml.sheet;base64,${b64}`;
     const out = await cloudinary.uploader.upload(dataUri, { folder: 'live-tech-backup/Invoice', public_id: `Invoice-${inv.invoiceNo}.xlsx`, use_filename: true, unique_filename: true, resource_type: 'raw' });
-    await addInvIndex({ no: inv.invoiceNo, client: inv.client, date: inv.date, items: cleanItems.length, total: subtotal, public_id: out.public_id, rt: out.resource_type });
+    await addInvIndex({ no: inv.invoiceNo, client: inv.client, date: inv.date, items: cleanItems.length, total: subtotal, desc: cleanItems.map(i => i.brand ? i.brand + ' - ' + i.description : i.description).join(', ').slice(0, 120), public_id: out.public_id, rt: out.resource_type });
     res.json({ ok: true, url: vaultFileLink(out.public_id, out.resource_type), invoiceNo: inv.invoiceNo, total: subtotal, items: cleanItems.length });
   } catch (e) {
     console.error('API invoice fail:', e.message);
@@ -1364,7 +1364,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
                   idxPid=out2.public_id; idxRt=out2.resource_type;
                 }catch(e){ console.log('Excel gen fail',e.stack||e.message); throw e; }
                 const total = subtotal;
-                addInvIndex({ no: inv.invoiceNo, client: inv.client, date: inv.date, items: inv.items.length, total, public_id: idxPid, rt: idxRt }).catch(()=>{});
+                addInvIndex({ no: inv.invoiceNo, client: inv.client, date: inv.date, items: inv.items.length, total, desc: inv.items.map(it => it.brand ? it.brand + ' - ' + it.description : it.description).join(', ').slice(0, 120), public_id: idxPid, rt: idxRt }).catch(()=>{});
                 let msg=`Ho gaya! Invoice ban gaya.\nInvoice #: ${inv.invoiceNo}\nDate: ${inv.date}\nClient: ${inv.client}\nItems: ${inv.items.length}\n`;
                 inv.items.forEach((it,i)=>{ msg+=`${i+1}. ${it.description} | ${it.qty} x ${it.rate} = ${(Number(it.qty)*Number(it.rate)).toFixed(2)}${it.brand?' | '+it.brand:''}\n`; });
                 msg+=`Total: ${total.toFixed(2)}\n\nExcel: ${excelUrl}\n\nVault: ${VAULT_URL}`;
