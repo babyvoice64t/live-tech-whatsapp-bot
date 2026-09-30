@@ -78,9 +78,9 @@ function noteNewCat(name) {
 const CLIENTS = ['Abdul Rehman Garments','Arif Habib Corporation','Arif Habib Limitd','Arif Habib Limited','BDO','BDO Pakistan','Blue Light Computers','CASH','FESF','Habib Public','Habib Public School','Harmain Jewellers','Harmain Jewelllers','Harmain Jweler','MSN','Maple Pharmaceuticals','Maple pharma','Mega Textiles','Mr.Naseem Baig','Mr.Taha','NCCPL','NRT','NoorulQuran madrsa','Murtaza Jaffrani','S.Ejazuddin & Co.','S.Ejazuddin and Co.','S.Ejazudin & Co.','SSFR','SSFR (PVT) LTD.','SSFR PVT LTD','SSFR PVT. LTD.','Sana Safinaz','Shajar Capital','Meezan Bank','TAJ CORPORATION','Virtuesoft'];
 
 function clientMenuText() {
-  let lines=['Client select karo:\n'];
+  let lines=['Select client:\n'];
   CLIENTS.forEach((c,i)=> lines.push(`${i+1}. ${c}`));
-  lines.push(`\nNumber bhejo (1-${CLIENTS.length}) ya naya client naam likho`);
+  lines.push(`\nSend a number (1-${CLIENTS.length}) or type a new client name`);
   return lines.join('\n');
 }
 
@@ -214,7 +214,7 @@ app.post('/api/poll-config', async (req, res) => {
   if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
   try {
     const cats = req.body?.categories;
-    if (!Array.isArray(cats)) return res.status(400).json({ error: 'categories[] bhejo' });
+    if (!Array.isArray(cats)) return res.status(400).json({ error: 'send categories[]' });
     const saved = await savePollConfig(cats);
     res.json({ ok: true, categories: saved });
   } catch (e) { res.status(400).json({ error: e.message || 'save failed' }); }
@@ -268,7 +268,7 @@ app.post('/api/invoice', async (req, res) => {
     if (!cleanItems.length) return res.status(400).json({ error: 'koi valid item nahi' });
     const subtotal = cleanItems.reduce((s, it) => s + it.qty * it.rate, 0);
     const inv = { date: String(date).slice(0, 12), invoiceNo: String(invoiceNo).replace(/[^0-9]/g, '').slice(0, 10), client: String(client).slice(0, 60), items: cleanItems };
-    if (!inv.invoiceNo) return res.status(400).json({ error: 'invoiceNo number me bhejo' });
+    if (!inv.invoiceNo) return res.status(400).json({ error: 'send invoiceNo as a number' });
     const excelBuf = await generateInvoiceExcelBuffer(inv);
     setLastInvoiceNo(parseInt(inv.invoiceNo, 10));
     await saveSerialToCloud();
@@ -354,12 +354,12 @@ async function uploadToCloudinary(buffer, filename, category) {
 }
 function ocrNote(out) {
   if (!out || !out.wasImage) return '';
-  if (out.ocrOk) return '\n🔍 Image ka text nikal liya — website search me milega.';
-  return '\n⚠️ Image ka text nahi nikal saka.';
+  if (out.ocrOk) return '\n🔍 Image text extracted — searchable on the website.';
+  return '\n⚠️ Could not extract image text.';
 }
 function friendlyUploadErr(e) {
   const m = String(e?.error?.message || e?.message || '').toLowerCase();
-  if (m.includes('slow down') || m.includes('processing capacity') || m.includes('capac') || m.includes('rate limit')) return 'Server busy hai — 30 sec baad dobara vote karo, file line me safe hai.';
+  if (m.includes('slow down') || m.includes('processing capacity') || m.includes('capac') || m.includes('rate limit')) return 'Server is busy — vote again after 30 sec, your file is safe in queue.';
   return `Upload failed: ${e.message}`;
 }
 
@@ -408,7 +408,7 @@ function getState(jid) {
 }
 
 function mainMenuText() {
-  return `Main Menu:\n1. Backup add karna (file bhejo)\n2. Invoice banana\n3. Purane documents mangwana (date se)\n\n1, 2 ya 3 bhejo`;
+  return `Main Menu:\n1. Add backup (send a file)\n2. Create invoice\n3. Get old documents (by date)\n\nSend 1, 2 or 3`;
 }
 // ponytail: AI se date nikalo ("5 din pehle", "1 mahine pehle" Roman Urdu samajhta hai)
 async function aiResolveDate(text) {
@@ -422,7 +422,7 @@ async function aiResolveDate(text) {
       body: JSON.stringify({
         model: GROQ_MODEL, temperature: 0, max_tokens: 60,
         messages: [
-          { role: 'system', content: `Today is ${formatDateDDMMYYYY(new Date())}. Resolve the user's day/span to JSON ONLY {"date":"DD-MM-YYYY","days":1}. Examples: "5 din pehle"→date 5 days ago days 1, "1 mahine pehle"→date 30 days ago days 1, "pichle hafte ke"→date 7 days ago days 7, "pichle mahine ke"→date 30 days ago days 30, "peer ko"→most recent past Monday days 1. Cap days at 31. If no date meant, {"date":"","days":0}.` },
+          { role: 'system', content: `Today is ${formatDateDDMMYYYY(new Date())}. Resolve the user's day/span to JSON ONLY {"date":"DD-MM-YYYY","days":1}. Examples: "5 days ago"→date 5 days ago days 1, "1 month ago"→date 30 days ago days 1, "last week's"→date 7 days ago days 7, "last month's"→date 30 days ago days 30, "monday"→most recent past Monday days 1. Cap days at 31. If no date meant, {"date":"","days":0}.` },
           { role: 'user', content: String(text).slice(0, 200) },
         ],
       }),
@@ -465,7 +465,7 @@ async function sendDateRecords(primaryJid, fallbackJid, targets) {
 }
 async function sendRecordMessage(primaryJid, fallbackJid, targets, invHits, fileHits) {
   if (!invHits.length && !fileHits.length) {
-    await sendMessageSafe(primaryJid, fallbackJid, { text: `${targets.join(', ') || 'Us din'} ka kuch nahi mila. Menu: menu` });
+    await sendMessageSafe(primaryJid, fallbackJid, { text: `Nothing found for ${targets.join(', ') || 'that day'}. Menu: menu` });
     return;
   }
   const label = targets.length > 1 ? `${targets[0]} se ${targets[targets.length - 1]} tak` : targets[0];
@@ -549,14 +549,14 @@ async function loadSerialFromCloud() {
   } catch (e) { console.error('serial cloud load skip:', e.message?.slice(0, 120)); }
 }
 function getStepPrompt(step, inv){
-  if(step==='date') return `Date bhejo - Today likho ya DD-MM-YYYY (jaise 04-09-2026). Back ke liye 'back' likho`;
-  if(step==='invoiceNo'){ const nxt=getNextInvoiceNo(); return `Invoice No ready hai: ${nxt} (last ${lastInvoiceNo}). Yehi use karna hai to ${nxt} bhejo, ya manual No likho. Back: back`; }
+  if(step==='date') return `Send date — type Today or DD-MM-YYYY (e.g. 04-09-2026). Type 'back' to go back`;
+  if(step==='invoiceNo'){ const nxt=getNextInvoiceNo(); return `Invoice No ready: ${nxt} (last was ${lastInvoiceNo}). Send ${nxt} to use it, or type a manual No. Back: back`; }
   if(step==='client') return clientMenuText() + `\n\nBack: back`;
-  if(step==='description') return `Description bhejo (kaam ka naam). Back: back`;
-  if(step==='qty') return `Qty bhejo (number, jaise 2). Back: back`;
-  if(step==='rate') return `Rate / Unit Price bhejo (jaise 12000). Back: back`;
-  if(step==='brand') return `Brand bhejo (optional, skip ke liye - bhejo). Back: back`;
-  if(step==='askMore') return `Item ${inv.items?.length||1} save ho gaya.\nAur item add karna hai?\n1. Haan, aur item\n2. Nahi, invoice generate karo\n\nBack: back`;
+  if(step==='description') return `Send description (work name). Back: back`;
+  if(step==='qty') return `Send qty (number, e.g. 2). Back: back`;
+  if(step==='rate') return `Send rate / unit price (e.g. 12000). Back: back`;
+  if(step==='brand') return `Send brand (optional, send - to skip). Back: back`;
+  if(step==='askMore') return `Item ${inv.items?.length||1} saved.\nAdd another item?\n1. Yes, add item\n2. No, generate invoice\n\nBack: back`;
   return '';
 }
 
@@ -729,11 +729,11 @@ async function generatePdfFromExcelBuffer(excelBuf) {
 
 async function catMenu() {
   const cats = await getCats();
-  let lines = ['Category choose karo:\n'];
+  let lines = ['Choose a category:\n'];
   cats.forEach((c, i) => lines.push(`  ${i + 1}. ${c}`));
-  lines.push(`  ${cats.length + 1}. New Category (apna naam likho)`);
+  lines.push(`  ${cats.length + 1}. New Category (type your own name)`);
   lines.push(`  0. Cancel`);
-  lines.push(`\nNumber bhejo ya naam likho, cancel ke liye 0`);
+  lines.push(`\nSend a number or a name, 0 to cancel`);
   return lines.join('\n');
 }
 // ponytail: har backup file pe aaj ki date + HH-mm-ss (same-day Cloudinary overwrite rokne ko)
@@ -761,7 +761,7 @@ async function nextPrompt(s) {
   const f = s.pendingQueue[0];
   if (!f) return '';
   const n = s.pendingQueue.length;
-  return `File: ${f.filename}${n > 1 ? ` (1/${n} — baaki line me)` : ''} ready hai\n\n` + await catMenu();
+  return `File: ${f.filename}${n > 1 ? ` (1/${n} — rest in queue)` : ''} is ready\n\n` + await catMenu();
 }
 // ponytail: poll categories = admin portal se (Cloudinary JSON), fallback GROUP_CATS
 const GROUP_CATS = ['home exp', 'office exp', 'cheque', 'bank transaction', 'purchase', 'bill'];
@@ -823,14 +823,14 @@ async function saveGroupPending(primaryJid, fallbackJid, state, idx, cat) {
   if (!cur || cur.busy) return;
   cur.busy = true;
   try {
-    await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${cat} me save ho raha hai...` });
+    await sendMessageSafe(primaryJid, fallbackJid, { text: `Saving to ${cat}, one moment...` });
     const fname = catDatedName(cat, cur.filename, cur.customName);
     const out = await uploadToCloudinary(cur.buffer, fname, cat);
     noteNewCat(cat);
     state.pendingQueue.splice(idx, 1);
-    let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
+    let doneMsg = `Done.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
     const n = pendingCount(state);
-    if (n) doneMsg += `\n\n${n} aur baaki hain — unke poll me vote karo.`;
+    if (n) doneMsg += `\n\n${n} more remaining - vote on their polls.`;
     await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
   } catch (e) {
     cur.busy = false;
@@ -848,7 +848,7 @@ async function sendGroupPollFor(primaryJid, fallbackJid, state, idx) {
   try {
     const pollSecret = crypto.randomBytes(32);
     const pollOpts = await groupPollOptions();
-    const sent = await sendMessageSafe(primaryJid, fallbackJid, { poll: { name: `${label} — category select karo`, values: pollOpts, selectableCount: 1, messageSecret: pollSecret } });
+    const sent = await sendMessageSafe(primaryJid, fallbackJid, { poll: { name: `${label} — select category`, values: pollOpts, selectableCount: 1, messageSecret: pollSecret } });
     entry.pollMsgId = sent?.key?.id || null;
     entry.pollSecret = pollSecret;
     entry.pollOptions = pollOpts;
@@ -919,7 +919,7 @@ async function sendNewCategoryPrompt(primaryJid, fallbackJid, state, idx, prefix
   const entry = state.pendingQueue[idx];
   if (!entry || entry.done) return;
   entry.fallbackSent = true;
-  const qtext = (prefix ? prefix + '\n\n' : '') + `Nayi category banao\n\nFile: ${entry.filename}\nCategory ka naam isi message ko reply karke bhejo.`;
+  const qtext = (prefix ? prefix + '\n\n' : '') + `Create new category\n\nFile: ${entry.filename}\nReply to this message with the category name.`;
   try {
     const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: qtext });
     entry.qid = sent?.key?.id || entry.qid;
@@ -972,7 +972,7 @@ async function aiIntent(text) {
       body: JSON.stringify({
         model: GROQ_MODEL, temperature: 0.2, max_tokens: 150,
         messages: [
-          { role: 'system', content: `Today is ${formatDateDDMMYYYY(new Date())}. You route messages for a backup/invoice WhatsApp bot (Roman Urdu + English). Reply ONLY JSON {"intent":"...","client":"","date":"","days":1,"reply":""}. intents: backup (user wants to save/send a file), invoice_start (wants to MAKE a new invoice), invoice_search (asks about an existing invoice/bill — put client name or number in client), date_search (asks for files/invoices of days — put start date as DD-MM-YYYY in date and span in days: "5 din pehle" means date=5 days ago days=1, "pichle hafte ke" means date=7 days ago days=7, "pichle mahine ke" means date=30 days ago days=30), list (vault link), help, logout, smalltalk (greetings/thanks/ok/how-are-you — put 1-2 line friendly Roman Urdu in reply, else empty), unknown. Never invent numbers, links, or prices.` },
+          { role: 'system', content: `Today is ${formatDateDDMMYYYY(new Date())}. You route messages for a backup/invoice WhatsApp bot (English). Reply ONLY JSON {"intent":"...","client":"","date":"","days":1,"reply":""}. intents: backup (user wants to save/send a file), invoice_start (wants to MAKE a new invoice), invoice_search (asks about an existing invoice/bill — put client name or number in client), date_search (asks for files/invoices of days — put start date as DD-MM-YYYY in date and span in days: "5 days ago" means date=5 days ago days=1, "last week's" means date=7 days ago days=7, "last month's" means date=30 days ago days=30), list (vault link), help, logout, smalltalk (greetings/thanks/ok/how-are-you — put 1-2 line friendly English in reply, else empty), unknown. Never invent numbers, links, or prices.` },
           { role: 'user', content: String(text).slice(0, 300) },
         ],
       }),
@@ -1152,7 +1152,7 @@ async function startBot() {
                 console.log(`🗳️ vote decrypted optIdx=${optIdx}`);
                 if (opts[optIdx] === 'cancel') {
                   found.state.pendingQueue.splice(found.idx, 1);
-                  await sendMessageSafe(primaryJid, fallbackJid, { text: `Skip: ${entry.filename} upload nahi hui.` });
+                  await sendMessageSafe(primaryJid, fallbackJid, { text: `Skipped: ${entry.filename} was not uploaded.` });
                 } else if (optIdx >= 0) {
                   try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, opts[optIdx]); }
                   catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) }); }
@@ -1192,12 +1192,12 @@ async function startBot() {
             const GROUP_CANCEL = ['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'];
             if (text.trim() === '0' || GROUP_CANCEL.includes(lower)) {
               state.pendingQueue.splice(nIdx, 1);
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Skip: ${entry.filename} upload nahi hui.` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Skipped: ${entry.filename} was not uploaded.` });
               continue;
             }
             const nm = cleanGroupName(text);
             if (!nm || nm.length < 2) {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Naam chota hai — misal: blc (0 = cancel)` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Name too short — e.g. blc (0 = cancel)` });
               continue;
             }
             entry.customName = nm; entry.awaitingName = false;
@@ -1212,7 +1212,7 @@ async function startBot() {
             const GROUP_CANCEL = ['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'];
             if (text.trim() === '0' || GROUP_CANCEL.includes(lower)) {
               state.pendingQueue.splice(gIdx, 1);
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Skip: ${entry.filename} upload nahi hui.` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Skipped: ${entry.filename} was not uploaded.` });
               continue;
             }
             // nayi-category confirm ka jawab
@@ -1230,7 +1230,7 @@ async function startBot() {
               const choices = await groupChoiceList();
               if (num >= 1 && num <= choices.length) pick = choices[num - 1];
               else {
-                await sendMessageSafe(primaryJid, fallbackJid, { text: `Galat number. 1-${choices.length} ya naam reply karo, cancel ke liye 0.` }, { quoted: msg });
+                await sendMessageSafe(primaryJid, fallbackJid, { text: `Wrong number. Reply 1-${choices.length} or a name, 0 to cancel.` }, { quoted: msg });
                 continue;
               }
             } else {
@@ -1241,17 +1241,17 @@ async function startBot() {
               catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) }); }
               continue;
             }
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `List me nahi — Vault admin se nayi category banao. 1-${(await groupChoiceList()).length} ya naam reply karo, cancel 0.` }, { quoted: msg });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Not in the list — ask the Vault admin to create a new category. Reply 1-${(await groupChoiceList()).length} or a name, 0 to cancel.` }, { quoted: msg });
             continue;
           }
           // bina-quote: cancel purana behavior, command neeche, baaki beech ki chat khamosh
           if (lower === '0' || ['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'].includes(lower)) {
             const dropped = state.pendingQueue.shift();
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Skip: ${dropped ? dropped.filename : ''} upload nahi hui.` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Skipped: ${dropped ? dropped.filename : ''} was not uploaded.` });
             continue;
           }
           if (['retry','dobara','phir se','retry karo'].includes(lower) && pendingCount(state)) {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Dobara try karo — isi poll pe vote karo ya file ko reply karke category likho. File line me safe hai.` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Try again — vote on the same poll or reply to the file with the category. Your file is safe in queue.` });
             continue;
           }
           const isCmd = /^(menu|main|help|\?|list|logout)$/.test(lower) || lower.includes('vault') || lower.includes('link');
@@ -1267,25 +1267,25 @@ async function startBot() {
           if (num >= 1 && num <= cats.length) {
             const cat = cats[num - 1];
             try {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${cat} me save ho raha hai...` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Saving to ${cat}, one moment...` });
               const fname = datedName(cur.filename);
               const out = await uploadToCloudinary(cur.buffer, fname, cat);
               state.pendingQueue.shift();
-let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
-              if (pendingCount(state)) doneMsg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
+let doneMsg = `Done.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
+              if (pendingCount(state)) doneMsg += `\n\n${pendingCount(state)} more remaining.\n\n` + await nextPrompt(state);
               await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
             } catch (e) {
               await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) });
             }
           } else if (num === cats.length + 1) {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Nayi category ka naam likh ke bhejo (jaise: My Files)` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Type the new category name (e.g. My Files)` });
           } else if (num === 0) {
             const dropped = state.pendingQueue.shift();
-            let msg = `Skip: ${dropped ? dropped.filename : ''} upload nahi hui.`;
-            if (pendingCount(state)) msg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
+            let msg = `Skipped: ${dropped ? dropped.filename : ''} was not uploaded.`;
+            if (pendingCount(state)) msg += `\n\n${pendingCount(state)} more remaining.\n\n` + await nextPrompt(state);
             await sendMessageSafe(primaryJid, fallbackJid, { text: msg });
           } else {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Galat number. 0-${cats.length + 1} tak choose karo.` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Wrong number. Choose 0-${cats.length + 1}.` });
           }
           continue;
         }
@@ -1296,25 +1296,25 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
           if (isPass) {
             state.loggedIn = true; state.attempts = 0; state.mode=null; state.invoice=null; state._menuShown=false;
             await sendMessageSafe(primaryJid, fallbackJid, {
-              text: `Login ho gaya!\n\n${mainMenuText()}\n\nVault: ${VAULT_URL}`
+              text: `Logged in!\n\n${mainMenuText()}\n\nVault: ${VAULT_URL}`
             });
             continue;
           }
 
           if (isGreeting(lower)) {
-            const greet = lower.includes('salam') || lower.includes('aoa') ? 'Wa Alaikum Salam!' : 'Assalam o Alaikum!';
+            const greet = lower.includes('salam') || lower.includes('aoa') ? 'Wa Alaikum Salam!' : 'Hello!';
             await sendMessageSafe(primaryJid, fallbackJid, {
-              text: `${greet} Live Tech Backup Bot me khush amdeed.\n\nFile bhejne ke liye pehle password bhejo, phir aap file upload kar sakte ho.`
+              text: `${greet} Welcome to the Live Tech Backup Bot.\n\nSend the password first, then you can upload files.`
             });
             continue;
           }
 
           state.attempts = (state.attempts || 0) + 1;
           if (state.attempts >= 5) {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `5 dafa galat password. Thori der baad try karo (15 min).` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Wrong password 5 times. Try again later (15 min).` });
             setTimeout(() => { state.attempts = 0; }, 15 * 60 * 1000);
           } else {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Password galat hai. Dobara sahi password bhejo.` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Wrong password. Please send the correct password.` });
           }
           continue;
         }
@@ -1332,35 +1332,35 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
                 inv.description = last.description; inv.qty = String(last.qty); inv.rate = String(last.rate); inv.brand = last.brand;
               }
               inv.step = order[idx-1];
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Piche chale gaye.\n` + getStepPrompt(inv.step, inv) });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Went back.\n` + getStepPrompt(inv.step, inv) });
             } else {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Pehle se hi pehle step pe ho.` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Already on the first step.` });
             }
             continue;
           }
-          if (lower==='cancel' || lower==='menu' || lower==='exit') { state.invoice=null; await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice cancel ho gaya.\n\n${mainMenuText()}` }); continue; }
+          if (lower==='cancel' || lower==='menu' || lower==='exit') { state.invoice=null; await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice cancelled.\n\n${mainMenuText()}` }); continue; }
           // ensure items array
           if(!inv.items) inv.items=[];
           if (inv.step === 'date') {
             let d=null;
             if (lower==='today' || lower==='aaj') d=formatDateDDMMYYYY(new Date());
             else d=parseDateInput(text);
-            if (!d) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Date samajh nahi aayi. Today likho ya DD-MM-YYYY me bhejo (jaise 04-09-2026)` }); continue; }
+            if (!d) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Date not understood. Type Today or send DD-MM-YYYY (e.g. 04-09-2026)` }); continue; }
             inv.date=d; inv.step='invoiceNo';
             const next = getNextInvoiceNo();
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Date: ${d} save ho gayi.\nInvoice No ready hai: ${next} (last ${lastInvoiceNo} tha)\nYehi use karna hai to ${next} bhejo, ya apna number manually likho` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Date: ${d} saved.\nInvoice No ready: ${next} (last was ${lastInvoiceNo})\nSend ${next} to use it, or type your own number` });
             continue;
           }
           if (inv.step === 'invoiceNo') {
-            if (!text || text.length<1) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice No khali nahi, dobara bhejo` }); continue; }
+            if (!text || text.length<1) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice No can't be empty, send again` }); continue; }
             const entered = text.trim();
             const num = entered.replace(/[^0-9]/g,'');
-            if(!num || num.length<1){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice No number me bhejo (jaise 7779)` }); continue; }
+            if(!num || num.length<1){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Send Invoice No as a number (e.g. 7779)` }); continue; }
             inv.invoiceNo=num;
             setLastInvoiceNo(parseInt(num,10));
             saveSerialToCloud().catch(()=>{});
             inv.step='client';
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice # ${inv.invoiceNo} save ho gaya.\n${clientMenuText()}` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice # ${inv.invoiceNo} saved.\n${clientMenuText()}` });
             continue;
           }
           if (inv.step === 'client') {
@@ -1368,31 +1368,31 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
             if (/^\d+$/.test(text)) {
               const n=parseInt(text);
               if(n>=1 && n<=CLIENTS.length) clientName=CLIENTS[n-1];
-              else { await sendMessageSafe(primaryJid, fallbackJid, { text: `Galat number. 1-${CLIENTS.length} bhejo ya naya naam likho` }); continue; }
+              else { await sendMessageSafe(primaryJid, fallbackJid, { text: `Wrong number. Send 1-${CLIENTS.length} or type a new name` }); continue; }
             } else {
               clientName=text.trim().slice(0,60);
-              if(clientName.length<2){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Client naam chhota hai, dobara bhejo` }); continue; }
+              if(clientName.length<2){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Client name too short, send again` }); continue; }
             }
             inv.client=clientName; inv.step='description';
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Client: ${clientName} save.\nAb Description bhejo (kaam ka naam) - back ke liye 'back' likho` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Client: ${clientName} saved.\nNow send the description (work name) — type 'back' to go back` });
             continue;
           }
           if (inv.step === 'description') {
-            if (!text || text.length<2) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Description chhota hai, dobara bhejo` }); continue; }
+            if (!text || text.length<2) { await sendMessageSafe(primaryJid, fallbackJid, { text: `Description too short, send again` }); continue; }
             inv.description=text.trim(); inv.step='qty';
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Description save.\nAb Qty bhejo (number, jaise 1 ya 5) - back: back` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Description saved.\nNow send qty (number, e.g. 1 or 5) — back: back` });
             continue;
           }
           if (inv.step === 'qty') {
-            const q=parseFloat(text); if(isNaN(q)||q<=0){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Qty number me bhejo, jaise 2` }); continue; }
+            const q=parseFloat(text); if(isNaN(q)||q<=0){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Send qty as a number, e.g. 2` }); continue; }
             inv.qty=String(q); inv.step='rate';
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Qty ${q} save.\nAb Rate / Unit Price bhejo (jaise 5000) - back: back` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Qty ${q} saved.\nNow send rate / unit price (e.g. 5000) — back: back` });
             continue;
           }
           if (inv.step === 'rate') {
-            const r=parseFloat(text); if(isNaN(r)||r<0){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Rate number me bhejo` }); continue; }
+            const r=parseFloat(text); if(isNaN(r)||r<0){ await sendMessageSafe(primaryJid, fallbackJid, { text: `Send rate as a number` }); continue; }
             inv.rate=String(r); inv.step='brand';
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Rate ${r} save.\nAb Brand bhejo (optional hai, skip ke liye - bhejo) - back: back` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Rate ${r} saved.\nNow send brand (optional, send - to skip) — back: back` });
             continue;
           }
           if (inv.step === 'brand') {
@@ -1403,18 +1403,18 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
             // clear temp for next item
             inv.description=''; inv.qty=''; inv.rate=''; inv.brand='';
             inv.step='askMore';
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Item ${inv.items.length} save ho gaya: ${inv.items[inv.items.length-1].description} | Qty ${inv.items[inv.items.length-1].qty} | Rate ${inv.items[inv.items.length-1].rate}\n\nAur item add karna hai?\n1. Haan, aur item\n2. Nahi, invoice generate karo\n\nBack: back (pichla item edit)` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Item ${inv.items.length} saved: ${inv.items[inv.items.length-1].description} | Qty ${inv.items[inv.items.length-1].qty} | Rate ${inv.items[inv.items.length-1].rate}\n\nAdd another item?\n1. Yes, add item\n2. No, generate invoice\n\nBack: back (edit previous item)` });
             continue;
           }
           if (inv.step === 'askMore') {
             if(lower==='1' || lower==='haan' || lower==='yes' || lower==='han'){
               inv.step='description';
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Next item:\nDescription bhejo (kaam ka naam) - back: back` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Next item:\nSend description (work name) — back: back` });
               continue;
             }
             if(lower==='2' || lower==='nahi' || lower==='no' || lower==='generate' || lower==='n'){
               // Generate invoice now - multi items, only Excel
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, aapka invoice ban raha hai...` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `One moment, generating your invoice...` });
               try {
                 const subtotal = inv.items.reduce((s,it)=> s + (Number(it.qty)||0)*(Number(it.rate)||0), 0);
                 inv.discount='0'; inv.client=inv.client||'Walk-in Client';
@@ -1430,7 +1430,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
                 }catch(e){ console.log('Excel gen fail',e.stack||e.message); throw e; }
                 const total = subtotal;
                 addInvIndex({ no: inv.invoiceNo, client: inv.client, date: inv.date, items: inv.items.length, total, desc: inv.items.map(it => it.brand ? it.brand + ' - ' + it.description : it.description).join(', ').slice(0, 120), public_id: idxPid, rt: idxRt }).catch(()=>{});
-                let msg=`Ho gaya! Invoice ban gaya.\nInvoice #: ${inv.invoiceNo}\nDate: ${inv.date}\nClient: ${inv.client}\nItems: ${inv.items.length}\n`;
+                let msg=`Done! Invoice created.\nInvoice #: ${inv.invoiceNo}\nDate: ${inv.date}\nClient: ${inv.client}\nItems: ${inv.items.length}\n`;
                 inv.items.forEach((it,i)=>{ msg+=`${i+1}. ${it.description} | ${it.qty} x ${it.rate} = ${(Number(it.qty)*Number(it.rate)).toFixed(2)}${it.brand?' | '+it.brand:''}\n`; });
                 msg+=`Total: ${total.toFixed(2)}\n\nExcel: ${excelUrl}\n\nVault: ${VAULT_URL}`;
                 state.invoice=null;
@@ -1438,12 +1438,12 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
                 await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
               } catch(e){
                 state.invoice=null;
-                await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice banane me error: ${e.message}` });
+                await sendMessageSafe(primaryJid, fallbackJid, { text: `Error generating invoice: ${e.message}` });
                 await sendMessageSafe(primaryJid, fallbackJid, { text: mainMenuText() });
               }
               continue;
             }
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `1 bhejo (aur item) ya 2 bhejo (generate). Back: back` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Send 1 (more items) or 2 (generate). Back: back` });
             continue;
           }
         }
@@ -1462,13 +1462,13 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
             const rigid = parseDateInput(text);
             if (rigid) targets = [rigid];
             else {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Samajh raha hun...` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Working on it...` });
               const aiD = await aiResolveDate(text);
               if (aiD) { targets = []; for (let i = 0; i < aiD.days; i++) targets.push(shiftDate(aiD.date, i)); }
             }
           }
           if (!targets.length) {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Date samajh nahi aayi. "5 din pehle", "1 mahine pehle" ya DD-MM-YYYY likho. Menu: menu` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Date not understood. Type "5 days ago", "1 month ago" or DD-MM-YYYY. Menu: menu` });
             continue;
           }
           await sendDateRecords(primaryJid, fallbackJid, targets);
@@ -1481,21 +1481,21 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
         if (lower==='menu' || lower==='main' || lower==='1' || lower==='2' || lower==='3' || lower==='backup' || lower.includes('invoice') || lower.includes('purane') || lower.includes('history') || lower.includes('record')) {
           if (lower==='1' || lower==='backup' || lower==='1 backup') {
             state.mode='backup'; state.invoice=null;
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Backup mode on hai. Ab file bhejo (image, PDF, video, xlsx).` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Backup mode is on. Now send a file (image, PDF, video, xlsx).` });
             continue;
           }
           if (lower==='2' || lower==='invoice' || lower.includes('invoice banao') || lower.includes('invoice banana') || lower.includes('new invoice')) {
             if (isGroup) {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice DM me banao — mujhe personal chat me msg karo.` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Create invoices in DM — message me in a personal chat.` });
               continue;
             }
             state.mode='invoice'; state.invoice={step:'date', date:'', invoiceNo:'', client:'', description:'', qty:'', rate:'', brand:'', discount:'0', items:[]};
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice banana shuru.\nDate bhejo - Today likho ya custom date (DD-MM-YYYY) bhejo` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Starting a new invoice.\nSend date — type Today or a custom date (DD-MM-YYYY)` });
             continue;
           }
           if (lower==='3' || lower.includes('purane') || lower.includes('history') || lower.includes('record')) {
             state.mode='history'; state.invoice=null;
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Kis date ka record chahiye?\nToday / Kal likho ya DD-MM-YYYY bhejo (jaise 04-09-2026).\nMenu: menu` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Which date's record do you need?\nType Today / Yesterday or DD-MM-YYYY (e.g. 04-09-2026).\nMenu: menu` });
             continue;
           }
           // if just menu/help, show menu
@@ -1517,7 +1517,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
         // ─── Logged in commands — smart ───
         if (lower === 'help' || lower === '?' || lower.includes('madad') || lower.includes('help')) {
           await sendMessageSafe(primaryJid, fallbackJid, {
-            text: `Help:\n1. File bhejo (image/PDF/video)\n2. Category number choose karo (list me se)\n3. Upload ho jayega + link milega\n\nMenu: 1 backup • 2 invoice • 3 purane documents\nCommands:\nhelp - ye message\nlist - vault link dekho\nlogout - bahar niklo\nmenu - main menu`
+            text: `Help:\n1. Send a file (image/PDF/video)\n2. Choose a category number (from the list)\n3. It uploads + you get a link\n\nMenu: 1 backup • 2 invoice • 3 old documents\nCommands:\nhelp - this message\nlist - view vault link\nlogout - log out\nmenu - main menu`
           });
           continue;
         }
@@ -1527,7 +1527,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
         }
         if (lower === 'logout' || lower.includes('bahar') || lower.includes('exit')) {
           state.loggedIn = false; state.invoice=null; state.mode=null; state._menuShown=false;
-          await sendMessageSafe(primaryJid, fallbackJid, { text: `Logout ho gaya. Dobara login ke liye password bhejo.` });
+          await sendMessageSafe(primaryJid, fallbackJid, { text: `Logged out. Send the password to log in again.` });
           continue;
         }
 
@@ -1536,8 +1536,8 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
           if (isGroup) continue; // group me sirf image ko quoted reply chalta hai (upar handle)
           if (['cancel', 'rehne do', 'chor do', 'choro', 'rehnedo'].includes(lower)) {
             const dropped = state.pendingQueue.shift();
-            let msg = `Skip: ${dropped ? dropped.filename : ''} upload nahi hui.`;
-            if (pendingCount(state)) msg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
+            let msg = `Skipped: ${dropped ? dropped.filename : ''} was not uploaded.`;
+            if (pendingCount(state)) msg += `\n\n${pendingCount(state)} more remaining.\n\n` + await nextPrompt(state);
             await sendMessageSafe(primaryJid, fallbackJid, { text: msg });
             continue;
           }
@@ -1545,13 +1545,13 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
           if (catName) {
             const cur = state.pendingQueue[0];
             try {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${catName} me save ho raha hai...` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Saving to ${catName}, one moment...` });
               const fname = datedName(cur.filename);
               const out = await uploadToCloudinary(cur.buffer, fname, catName);
               noteNewCat(catName);
               state.pendingQueue.shift();
-              let doneMsg = `Ho gaya!\nCategory: ${catName}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
-              if (pendingCount(state)) doneMsg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
+              let doneMsg = `Done!\nCategory: ${catName}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
+              if (pendingCount(state)) doneMsg += `\n\n${pendingCount(state)} more remaining.\n\n` + await nextPrompt(state);
               await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
             } catch (e) {
               await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) });
@@ -1565,7 +1565,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
         const isDoc = !!inner.documentMessage;
         const isVideo = !!inner.videoMessage;
         if (state.invoice && (isImage || isDoc || isVideo)) {
-          await sendMessageSafe(primaryJid, fallbackJid, { text: `Pehle invoice complete karo ya cancel likho.` });
+          await sendMessageSafe(primaryJid, fallbackJid, { text: `Finish the invoice first or type cancel.` });
           continue;
         }
 
@@ -1580,7 +1580,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
 
           if (captionCat && !isGroup) {
             try {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Thori der, ${captionCat} me save ho raha hai...` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `Saving to ${captionCat}, one moment...` });
               const buffer = await downloadMediaMessage(dlMsg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage });
               let filename = inner.documentMessage?.fileName || caption.split('\n')[0] || `file-${Date.now()}`;
               if (!filename.includes('.')) { if (isImage) filename += '.jpg'; else if (isDoc) filename += '.pdf'; else filename += '.bin'; }
@@ -1589,7 +1589,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
               const out = await uploadToCloudinary(buffer, filename, captionCat);
               noteNewCat(captionCat);
               await sendMessageSafe(primaryJid, fallbackJid, {
-                text: `Ho gaya!\nCategory: ${captionCat}\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`
+                text: `Done!\nCategory: ${captionCat}\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`
               });
             } catch (e) {
               await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) });
@@ -1613,7 +1613,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
                   await sendGroupPollFor(primaryJid, fallbackJid, state, gIdx);
                 } else {
                   // ponytail: quote KE BAGHAIR plain sawal — quoted file (viewOnce/caption wrap) Web/Desktop pe render nahi hota, plain har client pe dikhta hai
-                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: `📁 *File ka naam likhein*\nCancel karne ke liye *0* bhejein.` });
+                  const sent = await sendMessageSafe(primaryJid, fallbackJid, { text: `📁 *Type the file name*\nSend *0* to cancel.` });
                   entry.nameQid = sent?.key?.id || null;
                 }
               } else {
@@ -1631,7 +1631,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
         // ─── Plain text category name (without file) ───
         const foundCat = (await getCats()).find(c => c.toLowerCase() === lower);
         if (foundCat) {
-          await sendMessageSafe(primaryJid, fallbackJid, { text: `${foundCat} select hui. Ab is category me file bhejo.` });
+          await sendMessageSafe(primaryJid, fallbackJid, { text: `${foundCat} selected. Now send a file for this category.` });
           state.lastCat = foundCat;
           continue;
         }
@@ -1642,16 +1642,16 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
           const intent = ai?.intent || 'unknown';
           if (intent === 'backup') {
             state.mode = 'backup'; state.invoice = null;
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Backup mode on hai. Ab file bhejo (image, PDF, video, xlsx).` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Backup mode is on. Now send a file (image, PDF, video, xlsx).` });
           } else if (intent === 'invoice_start') {
             state.mode = 'invoice'; state.invoice = { step: 'date', date: '', invoiceNo: '', client: '', description: '', qty: '', rate: '', brand: '', discount: '0', items: [] };
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Invoice banana shuru.\nDate bhejo - Today likho ya custom date (DD-MM-YYYY) bhejo` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Starting a new invoice.\nSend date — type Today or a custom date (DD-MM-YYYY)` });
           } else if (intent === 'invoice_search') {
             const q = String(ai.client || '').toLowerCase().trim();
             const list = await loadInvIndex();
             const hits = list.filter(e => !q || String(e.client || '').toLowerCase().includes(q) || String(e.no || '').includes(q)).slice(0, 5);
             if (!hits.length) {
-              await sendMessageSafe(primaryJid, fallbackJid, { text: `Koi invoice nahi mila${q ? ` (${ai.client})` : ''}. Naya banana ho to 2 likho.` });
+              await sendMessageSafe(primaryJid, fallbackJid, { text: `No invoice found${q ? ` (${ai.client})` : ''}. To create a new one, type 2.` });
             } else {
               let out = `Mile ${hits.length} invoice:\n`;
               hits.forEach(e => { out += `#${e.no} | ${e.client || '—'} | ${e.total != null && e.total !== '' && !isNaN(Number(e.total)) ? Number(e.total).toFixed(2) : '—'}\n`; });
@@ -1670,15 +1670,15 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
           } else if (intent === 'list') {
             await sendMessageSafe(primaryJid, fallbackJid, { text: `Vault: ${VAULT_URL}\nCategories: ${(await getCats()).join(' | ')}` });
           } else if (intent === 'help') {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Help:\nFile bhejo (backup), 2 likho (invoice), 3 likho (purane documents), client naam likho (invoice search).\nCommands: help • list • logout • menu` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Help:\nSend a file (backup), type 2 (invoice), type 3 (old documents), type a client name (invoice search).\nCommands: help • list • logout • menu` });
           } else if (intent === 'logout') {
             state.loggedIn = false; state.invoice = null; state.mode = null; state._menuShown = false;
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Logout ho gaya. Dobara login ke liye password bhejo.` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Logged out. Send the password to log in again.` });
           } else if (intent === 'smalltalk' && ai.reply) {
             const clean = String(ai.reply).slice(0, 300).replace(/https?:\S+/g, '').trim();
-            await sendMessageSafe(primaryJid, fallbackJid, { text: clean || `Ji! File bhejo ya help likho.` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: clean || `Hi! Send a file or type help.` });
           } else {
-            await sendMessageSafe(primaryJid, fallbackJid, { text: `Samajh nahi aaya. File bhejo, 2 likh ke invoice banao, ya help likho.` });
+            await sendMessageSafe(primaryJid, fallbackJid, { text: `Didn't understand. Send a file, type 2 to create an invoice, or type help.` });
           }
         }
 
@@ -1716,7 +1716,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
         const fallbackJid = key.remoteJidAlt ? key.remoteJid : null;
         if (hit.name === 'cancel') {
           found.state.pendingQueue.splice(found.idx, 1);
-          await sendMessageSafe(primaryJid, fallbackJid, { text: `Skip: ${entry.filename} upload nahi hui.` });
+          await sendMessageSafe(primaryJid, fallbackJid, { text: `Skipped: ${entry.filename} was not uploaded.` });
         } else {
           try { await saveGroupPending(primaryJid, fallbackJid, found.state, found.idx, hit.name); }
           catch (e) { await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) }); }
