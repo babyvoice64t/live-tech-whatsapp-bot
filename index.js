@@ -322,14 +322,15 @@ async function uploadToCloudinary(buffer, filename, category) {
   const dataUri = `data:${mime};base64,${base64}`;
   // Pre-upload OCR: image ho to text foran nikalo aur context me save karo (fail ho to upload phir bhi hoga)
   let ocrText = '';
-  if (mime.startsWith('image/')) {
+  const wasImage = mime.startsWith('image/');
+  if (wasImage) {
     try { ocrText = await extractOcrText(buffer, mime); } catch { ocrText = ''; }
   }
   // ponytail: free-tier Slow Down pe 3 try (2s, 5s), sirf transient errors pe
   let lastErr = null;
   for (let i = 0; i < 3; i++) {
     try {
-      return await cloudinary.uploader.upload(dataUri, {
+      const up = await cloudinary.uploader.upload(dataUri, {
         folder,
         public_id: filename.replace(/\.[^/.]+$/, '').slice(0,80),
         use_filename: true,
@@ -337,6 +338,9 @@ async function uploadToCloudinary(buffer, filename, category) {
         resource_type: 'auto',
         ...(ocrText ? { context: `ocr=${ocrText}` } : {}),
       });
+      up.ocrOk = !!ocrText;
+      up.wasImage = wasImage;
+      return up;
     } catch (e) {
       lastErr = e;
       const msg = String(e.error?.message || e.message || '').toLowerCase();
@@ -347,6 +351,11 @@ async function uploadToCloudinary(buffer, filename, category) {
     }
   }
   throw lastErr;
+}
+function ocrNote(out) {
+  if (!out || !out.wasImage) return '';
+  if (out.ocrOk) return '\n🔍 Image ka text nikal liya — website search me milega.';
+  return '\n⚠️ Image ka text nahi nikal saka.';
 }
 function friendlyUploadErr(e) {
   const m = String(e?.error?.message || e?.message || '').toLowerCase();
@@ -819,7 +828,7 @@ async function saveGroupPending(primaryJid, fallbackJid, state, idx, cat) {
     const out = await uploadToCloudinary(cur.buffer, fname, cat);
     noteNewCat(cat);
     state.pendingQueue.splice(idx, 1);
-    let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`;
+    let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
     const n = pendingCount(state);
     if (n) doneMsg += `\n\n${n} aur baaki hain — unke poll me vote karo.`;
     await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
@@ -1262,7 +1271,7 @@ async function startBot() {
               const fname = datedName(cur.filename);
               const out = await uploadToCloudinary(cur.buffer, fname, cat);
               state.pendingQueue.shift();
-let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`;
+let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
               if (pendingCount(state)) doneMsg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
               await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
             } catch (e) {
@@ -1541,7 +1550,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
               const out = await uploadToCloudinary(cur.buffer, fname, catName);
               noteNewCat(catName);
               state.pendingQueue.shift();
-              let doneMsg = `Ho gaya!\nCategory: ${catName}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`;
+              let doneMsg = `Ho gaya!\nCategory: ${catName}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
               if (pendingCount(state)) doneMsg += `\n\n${pendingCount(state)} aur baaki hain.\n\n` + await nextPrompt(state);
               await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
             } catch (e) {
@@ -1580,7 +1589,7 @@ let doneMsg = `Ho gaya.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink
               const out = await uploadToCloudinary(buffer, filename, captionCat);
               noteNewCat(captionCat);
               await sendMessageSafe(primaryJid, fallbackJid, {
-                text: `Ho gaya!\nCategory: ${captionCat}\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}\n\nVault: ${VAULT_URL}`
+                text: `Ho gaya!\nCategory: ${captionCat}\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`
               });
             } catch (e) {
               await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) });
