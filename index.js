@@ -320,6 +320,11 @@ async function uploadToCloudinary(buffer, filename, category) {
   const mimeMap = { jpg:'image/jpeg', jpeg:'image/jpeg', png:'image/png', pdf:'application/pdf', mp4:'video/mp4', mov:'video/quicktime', xlsx:'application/vnd.openxmlformats-officedocument.spreadsheetml.sheet', xls:'application/vnd.ms-excel', csv:'text/csv', docx:'application/vnd.openxmlformats-officedocument.wordprocessingml.document', doc:'application/msword', pptx:'application/vnd.openxmlformats-officedocument.presentationml.presentation', ppt:'application/vnd.ms-powerpoint', zip:'application/zip', txt:'text/plain' };
   const mime = mimeMap[ext] || 'application/octet-stream';
   const dataUri = `data:${mime};base64,${base64}`;
+  // Pre-upload OCR: image ho to text foran nikalo aur context me save karo (fail ho to upload phir bhi hoga)
+  let ocrText = '';
+  if (mime.startsWith('image/')) {
+    try { ocrText = await extractOcrText(buffer, mime); } catch { ocrText = ''; }
+  }
   // ponytail: free-tier Slow Down pe 3 try (2s, 5s), sirf transient errors pe
   let lastErr = null;
   for (let i = 0; i < 3; i++) {
@@ -330,6 +335,7 @@ async function uploadToCloudinary(buffer, filename, category) {
         use_filename: true,
         unique_filename: true,
         resource_type: 'auto',
+        ...(ocrText ? { context: `ocr=${ocrText}` } : {}),
       });
     } catch (e) {
       lastErr = e;
@@ -346,6 +352,37 @@ function friendlyUploadErr(e) {
   const m = String(e?.error?.message || e?.message || '').toLowerCase();
   if (m.includes('slow down') || m.includes('processing capacity') || m.includes('capac') || m.includes('rate limit')) return 'Server busy hai — 30 sec baad dobara vote karo, file line me safe hai.';
   return `Upload failed: ${e.message}`;
+}
+
+// ─── Pre-upload OCR: image ka text Groq vision se nikalo (upload se PEHLE, foran) ───
+async function extractOcrText(buffer, mime) {
+  if (!GROQ_API_KEY || !mime || !mime.startsWith('image/')) return '';
+  try {
+    if (buffer.length > 4 * 1024 * 1024) return ''; // bari files skip
+    const dataUrl = `data:${mime};base64,${buffer.toString('base64')}`;
+    const ctrl = new AbortController();
+    const to = setTimeout(() => ctrl.abort(), 25000);
+    let gr = null;
+    try {
+      gr = await fetch('https://api.groq.com/openai/v1/chat/completions', {
+        method: 'POST',
+        headers: { 'Authorization': 'Bearer ' + GROQ_API_KEY, 'Content-Type': 'application/json' },
+        signal: ctrl.signal,
+        body: JSON.stringify({
+          model: GROQ_MODEL, max_tokens: 1024,
+          messages: [{ role: 'user', content: [
+            { type: 'text', text: 'Extract ALL visible text from this image (receipt/screenshot). Return only the plain text, no commentary.' },
+            { type: 'image_url', image_url: { url: dataUrl } }
+          ]}]
+        })
+      });
+    } catch { gr = null; }
+    clearTimeout(to);
+    if (!gr || !gr.ok) return '';
+    const gj = await gr.json().catch(() => null);
+    const txt = String((gj && gj.choices && gj.choices[0] && gj.choices[0].message && gj.choices[0].message.content) || '').trim();
+    return txt.replace(/[|\r\n&=]+/g, ' ').replace(/\s{2,}/g, ' ').slice(0, 1500);
+  } catch { return ''; }
 }
 
 // ─── Groq (DM intent + date resolve; group me ab manual category sawal hai) ───

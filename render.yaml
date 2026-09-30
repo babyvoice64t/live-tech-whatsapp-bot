@@ -16,3 +16,7 @@ services:
         value: Live@786
       - key: VAULT_URL
         value: https://live-tech-backup-system.pages.dev
+      - key: GROQ_API_KEY
+        sync: false  # Render dashboard me set karo (console.groq.com se free key)
+      - key: GROQ_MODEL
+        value: qwen/qwen3.8-27b
