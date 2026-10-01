@@ -20,3 +20,5 @@ services:
         sync: false  # Render dashboard me set karo (console.groq.com se free key)
       - key: GROQ_MODEL
         value: qwen/qwen3.8-27b
+      - key: GROUP_NAME
+        value: Live Accounts
