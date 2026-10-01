@@ -35,6 +35,7 @@ const API_KEY = process.env.CLOUDINARY_API_KEY || '574556244787576';
 const API_SECRET = process.env.CLOUDINARY_API_SECRET || '6Zz697mbMjQ9HPcxOiFXgKiaM3E';
 const AUTH_PASSWORD = process.env.UPLOAD_PASSWORD || 'Live@786';
 const VAULT_URL = process.env.VAULT_URL || 'https://live-tech-backup-system.pages.dev';
+const GROUP_NAME = process.env.GROUP_NAME || 'Live Accounts'; // sirf isi group me jawab dega (Testing group = ledger bot)
 
 cloudinary.config({ cloud_name: CLOUD_NAME, api_key: API_KEY, api_secret: API_SECRET });
 
@@ -1120,6 +1121,15 @@ async function startBot() {
         state._altJid = altJid;
         // Groups: no password, backup-only (DM me invoice). Spam se bachne ke liye fallback/menu group me khamosh.
         const isGroup = rawJid.endsWith('@g.us');
+        // Same number pe 2 bots: ye bot sirf GROUP_NAME ("Live Accounts") me kaam karega — Testing group ledger bot ka hai
+        if (isGroup && GROUP_NAME) {
+          try {
+            let meta = groupCache.get(rawJid);
+            if (!meta) { meta = await sock.groupMetadata(rawJid); if (meta) groupCache.set(rawJid, meta); }
+            const subj = (meta && meta.subject ? String(meta.subject) : '').trim();
+            if (subj !== GROUP_NAME) { console.log(`skip: group "${subj}" != GROUP_NAME`); continue; }
+          } catch (e) { console.log('skip: group subject check fail'); continue; }
+        }
         if (isGroup) { state.loggedIn = true; state.invoice = null; }
 
         const inner = unwrapMsg(msg.message);
