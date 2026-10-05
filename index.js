@@ -40,6 +40,7 @@ const GROUP_NAME = process.env.GROUP_NAME || 'Live Accounts'; // sirf isi group 
 cloudinary.config({ cloud_name: CLOUD_NAME, api_key: API_KEY, api_secret: API_SECRET });
 
 let qrString = null;
+const BOT_START_TIME = Math.floor(Date.now() / 1000); // is waqt se purane messages ignore
 let sock = null;
 let isConnected = false;
 let reconnectAttempts = 0;
@@ -1191,6 +1192,9 @@ async function startBot() {
     for (const msg of messages) {
       try {
         if (!msg.message || msg.key.fromMe) { console.log('⏭️ skip: no message or fromMe'); continue; }
+        // Purane messages skip karo (deploy ke doran aye hue) — sirf naya maal process ho
+        const msgTs = Number(msg.messageTimestamp) || 0;
+        if (msgTs && msgTs < BOT_START_TIME - 60) { console.log('⏭️ skip: old message from before restart'); continue; }
         if (isJidBroadcast(msg.key.remoteJid)) { console.log('⏭️ skip: broadcast'); continue; }
 
         const rawJid = msg.key.remoteJid;
