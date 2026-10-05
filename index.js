@@ -284,6 +284,87 @@ app.post('/api/invoice', async (req, res) => {
   }
 });
 
+
+// ─── Reminders: portal se number + date/time + message, waqt pe WhatsApp bhejdo ───
+const REMINDERS_FILE = path.join(__dirname, 'reminders.json');
+
+function loadReminders(){
+  try{
+    const raw = fs.readFileSync(REMINDERS_FILE, 'utf8');
+    const arr = JSON.parse(raw);
+    return Array.isArray(arr) ? arr : [];
+  }catch{ return []; }
+}
+function saveReminders(list){
+  try{ fs.writeFileSync(REMINDERS_FILE, JSON.stringify(list.slice(0, 500), null, 1)); }
+  catch(e){ console.error('reminders save fail:', e.message); }
+}
+// 0317-3291218 / 03173291218 -> 923173291218@s.whatsapp.net
+function toWaJid(number){
+  let d = String(number || '').replace(/\D/g, '');
+  if(d.startsWith('0')) d = '92' + d.slice(1);
+  if(d.length < 10 || d.length > 13) return null;
+  return d + '@s.whatsapp.net';
+}
+
+// GET /api/reminders -> {reminders:[{id,number,datetime,message,sent,created_at}]}
+app.get('/api/reminders', (req, res) => {
+  if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
+  res.json({ reminders: loadReminders().sort((a,b) => String(a.datetime).localeCompare(String(b.datetime))) });
+});
+
+// POST /api/reminders {number, datetime (ISO), message} -> {ok:true, id}
+app.post('/api/reminders', (req, res) => {
+  if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
+  const number = String(req.body?.number || '').trim();
+  const datetime = String(req.body?.datetime || '').trim();
+  const message = String(req.body?.message || '').trim().slice(0, 500);
+  if(!toWaJid(number)) return res.status(400).json({ error: 'Valid phone number likho (e.g. 0317-3291218)' });
+  const ts = Date.parse(datetime);
+  if(!Number.isFinite(ts)) return res.status(400).json({ error: 'Valid date/time chahiye' });
+  if(ts < Date.now() - 60000) return res.status(400).json({ error: 'Waqt guzar chuka hai — future ka time do' });
+  if(!message) return res.status(400).json({ error: 'Message likho' });
+  const list = loadReminders();
+  const r = { id: 'r' + Date.now().toString(36) + Math.floor(Math.random()*999), number, datetime: new Date(ts).toISOString(), message, sent: false, created_at: new Date().toISOString() };
+  list.push(r);
+  saveReminders(list);
+  res.json({ ok: true, id: r.id });
+});
+
+// DELETE /api/reminders/:id -> {ok:true}
+app.delete('/api/reminders/:id', (req, res) => {
+  if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
+  const list = loadReminders();
+  const i = list.findIndex(x => x.id === req.params.id);
+  if(i < 0) return res.json({ ok: true, found: false });
+  list.splice(i, 1);
+  saveReminders(list);
+  res.json({ ok: true, found: true });
+});
+
+// Har 30 sec: due reminders check karo aur WhatsApp pe bhej do
+setInterval(async () => {
+  if(!isConnected || !sock) return;
+  const now = Date.now();
+  const list = loadReminders();
+  let changed = false;
+  for(const r of list){
+    if(r.sent) continue;
+    if(Date.parse(r.datetime) <= now){
+      const jid = toWaJid(r.number);
+      if(jid){
+        try{
+          await sock.sendMessage(jid, { text: `⏰ *Reminder*\n\n${r.message}` });
+          console.log(`⏰ reminder sent to ${r.number}`);
+        }catch(e){ console.error('reminder send fail:', e.message); }
+      }
+      r.sent = true;
+      changed = true;
+    }
+  }
+  if(changed) saveReminders(list);
+}, 30000);
+
 app.post('/disconnect', async (req, res) => {
   if (!checkAuth(req)) return res.status(401).json({ error: 'wrong password' });
   try { await sock?.logout(); } catch {}
