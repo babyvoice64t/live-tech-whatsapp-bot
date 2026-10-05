@@ -316,16 +316,20 @@ app.get('/api/reminders', (req, res) => {
 // POST /api/reminders {number, datetime (ISO), message} -> {ok:true, id}
 app.post('/api/reminders', (req, res) => {
   if (!checkAuth(req)) return res.status(401).json({ error: 'unauthorized' });
-  const number = String(req.body?.number || '').trim();
+  // number: single string (comma/newline separated bhi chalega) ya numbers: array
+  let rawNums = [];
+  if(Array.isArray(req.body?.numbers)) rawNums = req.body.numbers;
+  else rawNums = String(req.body?.number || '').split(/[,\n]+/);
+  const numbers = [...new Set(rawNums.map(n => String(n).trim()).filter(n => toWaJid(n)))];
   const datetime = String(req.body?.datetime || '').trim();
   const message = String(req.body?.message || '').trim().slice(0, 500);
-  if(!toWaJid(number)) return res.status(400).json({ error: 'Valid phone number likho (e.g. 0317-3291218)' });
+  if(!numbers.length) return res.status(400).json({ error: 'Valid phone number likho (e.g. 0317-3291218)' });
   const ts = Date.parse(datetime);
   if(!Number.isFinite(ts)) return res.status(400).json({ error: 'Valid date/time chahiye' });
   if(ts < Date.now() - 60000) return res.status(400).json({ error: 'Waqt guzar chuka hai — future ka time do' });
   if(!message) return res.status(400).json({ error: 'Message likho' });
   const list = loadReminders();
-  const r = { id: 'r' + Date.now().toString(36) + Math.floor(Math.random()*999), number, datetime: new Date(ts).toISOString(), message, sent: false, created_at: new Date().toISOString() };
+  const r = { id: 'r' + Date.now().toString(36) + Math.floor(Math.random()*999), numbers, datetime: new Date(ts).toISOString(), message, sent: false, created_at: new Date().toISOString() };
   list.push(r);
   saveReminders(list);
   res.json({ ok: true, id: r.id });
@@ -351,11 +355,15 @@ setInterval(async () => {
   for(const r of list){
     if(r.sent) continue;
     if(Date.parse(r.datetime) <= now){
-      const jid = toWaJid(r.number);
-      if(jid){
+      // purana format (single number) bhi support karo
+      const nums = Array.isArray(r.numbers) ? r.numbers : [r.number];
+      for(const num of nums){
+        const jid = toWaJid(num);
+        if(!jid) continue;
         try{
           await sock.sendMessage(jid, { text: `⏰ *Reminder*\n\n${r.message}` });
-          console.log(`⏰ reminder sent to ${r.number}`);
+          console.log(`⏰ reminder sent to ${num}`);
+          await new Promise(rr => setTimeout(rr, 1500)); // anti-block delay
         }catch(e){ console.error('reminder send fail:', e.message); }
       }
       r.sent = true;
