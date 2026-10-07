@@ -1653,7 +1653,7 @@ let doneMsg = `Done.\nCategory: ${cat}\nFile: ${fname}${ocrNote(out)}\n\nVault: 
               const out = await uploadToCloudinary(cur.buffer, fname, catName);
               noteNewCat(catName);
               state.pendingQueue.shift();
-              let doneMsg = `Done!\nCategory: ${catName}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
+              let doneMsg = `Done!\nCategory: ${catName}\nFile: ${fname}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
               if (pendingCount(state)) doneMsg += `\n\n${pendingCount(state)} more remaining.\n\n` + await nextPrompt(state);
               await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
             } catch (e) {
@@ -1692,7 +1692,7 @@ let doneMsg = `Done.\nCategory: ${cat}\nFile: ${fname}${ocrNote(out)}\n\nVault: 
               const out = await uploadToCloudinary(buffer, filename, captionCat);
               noteNewCat(captionCat);
               await sendMessageSafe(primaryJid, fallbackJid, {
-                text: `Done!\nCategory: ${captionCat}\nFile: ${filename}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`
+                text: `Done!\nCategory: ${captionCat}\nFile: ${filename}${ocrNote(out)}\n\nVault: ${VAULT_URL}`
               });
             } catch (e) {
               await sendMessageSafe(primaryJid, fallbackJid, { text: friendlyUploadErr(e) });
