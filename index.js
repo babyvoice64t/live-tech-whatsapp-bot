@@ -919,7 +919,7 @@ async function saveGroupPending(primaryJid, fallbackJid, state, idx, cat) {
     const out = await uploadToCloudinary(cur.buffer, fname, cat);
     noteNewCat(cat);
     state.pendingQueue.splice(idx, 1);
-    let doneMsg = `Done.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
+    let doneMsg = `Done.\nCategory: ${cat}\nFile: ${fname}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
     const n = pendingCount(state);
     if (n) doneMsg += `\n\n${n} more remaining - vote on their polls.`;
     await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
@@ -1374,7 +1374,7 @@ async function startBot() {
               const fname = datedName(cur.filename);
               const out = await uploadToCloudinary(cur.buffer, fname, cat);
               state.pendingQueue.shift();
-let doneMsg = `Done.\nCategory: ${cat}\nFile: ${fname}\nLink: ${vaultFileLink(out.public_id, out.resource_type)}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
+let doneMsg = `Done.\nCategory: ${cat}\nFile: ${fname}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
               if (pendingCount(state)) doneMsg += `\n\n${pendingCount(state)} more remaining.\n\n` + await nextPrompt(state);
               await sendMessageSafe(primaryJid, fallbackJid, { text: doneMsg });
             } catch (e) {
