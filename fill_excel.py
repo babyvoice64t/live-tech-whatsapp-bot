@@ -91,19 +91,33 @@ try:
     ws.sheet_view.zoomScaleNormal = 100
 except:
     pass
-# Hide extra rows 20-38
+# Hide extra rows 20-38 + page setup (guarded: template may lack sheetPr,
+# which used to silently kill this whole block -> no print area, no fit)
+for r in range(20, 39):
+    ws.row_dimensions[r].hidden = True
+    ws.row_dimensions[r].height = 0
 try:
-    for r in range(20, 39):
-        ws.row_dimensions[r].hidden = True
-        ws.row_dimensions[r].height = 0
-    ws.print_area = 'A1:H44'
-    ws.page_setup.fitToPage = True
+    from openpyxl.worksheet.properties import WorksheetProperties, PageSetupProperties
+    if getattr(ws, 'sheet_properties', None) is None:
+        ws.sheet_properties = WorksheetProperties()
+    if ws.sheet_properties.pageSetUpPr is None:
+        ws.sheet_properties.pageSetUpPr = PageSetupProperties()
+    ws.sheet_properties.pageSetUpPr.fitToPage = True
+except Exception:
+    pass
+try:
+    ws.page_setup.orientation = 'portrait'
+    ws.page_setup.paperSize = ws.PAPERSIZE_A4
     ws.page_setup.fitToWidth = 1
     ws.page_setup.fitToHeight = 1
-    ws.sheet_properties.pageSetUpPr.fitToPage = True
     ws.page_setup.horizontalCentered = True
-    ws.page_setup.paperSize = ws.PAPERSIZE_A4
-except:
+    ws.page_margins.left = 0.4
+    ws.page_margins.right = 0.4
+    ws.page_margins.top = 0.5
+    ws.page_margins.bottom = 0.5
+    ws.print_area = 'A1:H46'
+    ws.print_options.horizontalCentered = True
+except Exception:
     pass
 # Re-apply header style for B18:H18 (lost when tables removed) - dark header white text
 try:
@@ -121,12 +135,23 @@ try:
     ws.row_dimensions[18].height = 18
 except:
     pass
-# Fill header
+# Blank template instruction cells in col A (notes, not data) + B15 'Column1'
+# placeholder, so none of them can ever overflow into the printed invoice
+for _a in ['A5','A6','A7','A8','A9','A15','A18','A51','A52','A53']:
+    try: ws[_a] = ''
+    except: pass
+try: ws['B15'] = ''
+except: pass
 try: ws['H6'] = data.get('date','')
 except: pass
 try: ws['H7'] = str(data.get('invoiceNo',''))
 except: pass
-try: ws['F10'] = data.get('client','Walk-in Client')
+try:
+    ws['F10'] = data.get('client','Walk-in Client')
+    ws['F10'].alignment = Alignment(horizontal="left", vertical="center", wrap_text=True)
+    import math as _math
+    _cl = max(1, _math.ceil(len(str(data.get('client',''))) / 40))
+    ws.row_dimensions[10].height = max(15, _cl * 17.5 + 4)
 except: pass
 # Items - multi
 items = data.get('items')
@@ -171,12 +196,16 @@ for idx, it in enumerate(norm):
     try: ws[f'H{r}'] = it['line']
     except: pass
     ws.row_dimensions[r].hidden=False
-    ws.row_dimensions[r].height=16
+    # Wrap long descriptions instead of clipping them (D col ~38 chars/line
+    # at Century Gothic 12) and grow the row to fit
+    import math as _math
+    _lines = max(1, _math.ceil(len(str(it['description'])) / 36))
+    ws.row_dimensions[r].height = max(16, _lines * 17.5 + 4)
     for col in ['B','C','D','E','F','G','H']:
         c=ws[f'{col}{r}']
         c.fill=fill
         c.font=Font(name="Century Gothic", size=12, color="0F172A")
-        c.alignment=Alignment(horizontal="center" if col in ['B','E','F','G','H'] else "left", vertical="center")
+        c.alignment=Alignment(horizontal="center" if col in ['B','E','F','G','H'] else "left", vertical="center", wrap_text=(col == 'D'))
         c.border=border
 # Hide remaining rows after items
 for r in range(19+len(norm), 39):
@@ -205,4 +234,27 @@ try:
 except:
     pass
 wb.save(out)
+# Strip template logos at the ZIP level: openpyxl image removal is unreliable
+# across versions, and any leftover drawing prints on the invoice.
+try:
+    import zipfile as _zf, re as _re, os as _os
+    _tmp = out + '.nostrip'
+    _zin = _zf.ZipFile(out, 'r')
+    _names = _zin.namelist()
+    _keep = [n for n in _names if not n.startswith('xl/drawings/') and not n.startswith('xl/media/')]
+    _zout = _zf.ZipFile(_tmp, 'w', _zf.ZIP_DEFLATED)
+    for _n in _keep:
+        _data = _zin.read(_n)
+        if _n.startswith('xl/worksheets/sheet') and _n.endswith('.xml'):
+            _data = _re.sub(rb'<drawing[^>]*/>', b'', _data)
+            _data = _re.sub(rb'<drawing[^>]*>.*?</drawing>', b'', _data, flags=_re.S)
+        elif _n.startswith('xl/worksheets/_rels/') and _n.endswith('.rels'):
+            _data = _re.sub(rb'<Relationship[^>]*Type="[^"]*/drawing"[^>]*/>', b'', _data)
+        elif _n == '[Content_Types].xml':
+            _data = _re.sub(rb'<Override[^>]*PartName="/xl/(drawings|media)/[^"]*"[^>]*/>', b'', _data)
+        _zout.writestr(_n, _data)
+    _zout.close(); _zin.close()
+    _os.replace(_tmp, out)
+except Exception as _e:
+    print('logo strip skipped:', _e)
 print('saved')
