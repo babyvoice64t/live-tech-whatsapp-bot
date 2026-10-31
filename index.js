@@ -20,6 +20,7 @@ import fs from 'fs';
 import { fileURLToPath } from 'url';
 import { Boom } from '@hapi/boom';
 import { v2 as cloudinary } from 'cloudinary';
+import { createSessionBackup, createRecoveryLedger, listVaultEtags, md5hex } from './session-recovery.js';
 import ExcelJS from 'exceljs';
 import PDFDocument from 'pdfkit';
 import os from 'os';
@@ -38,6 +39,14 @@ const VAULT_URL = process.env.VAULT_URL || 'https://live-tech-backup-system.page
 const GROUP_NAME = process.env.GROUP_NAME || 'Live Accounts'; // sirf isi group me jawab dega (Testing group = ledger bot)
 
 cloudinary.config({ cloud_name: CLOUD_NAME, api_key: API_KEY, api_secret: API_SECRET });
+
+// ─── Session persistence + missed-photo recovery (2026-10-31) ───
+// auth_info ab Cloudinary par bhi backup hota hai: restart/deploy par session
+// restore ho jayega (QR dobara nahi), aur band doran aayi group photos
+// reconnect par khud recover hongi — jo vault me pehle se hain wo dobara nahi.
+const AUTH_DIR = path.join(__dirname, 'auth_info');
+const sessionBackup = createSessionBackup(cloudinary, AUTH_DIR, console);
+const recoveryLedger = createRecoveryLedger(cloudinary, console);
 
 let qrString = null;
 const BOT_START_TIME = Math.floor(Date.now() / 1000); // is waqt se purane messages ignore
@@ -379,6 +388,7 @@ app.post('/disconnect', async (req, res) => {
   try { await sock?.logout(); } catch {}
   isConnected = false; qrString = null;
   try { fs.rmSync(path.join(__dirname, 'auth_info'), { recursive: true, force: true }); } catch {}
+  await sessionBackup.wipeRemote();
   res.json({ ok: true });
 });
 
@@ -387,6 +397,7 @@ app.post('/reset', async (req, res) => {
   try { sock?.end?.(undefined); } catch {}
   isConnected = false; qrString = null; reconnectAttempts = 0;
   try { fs.rmSync(path.join(__dirname, 'auth_info'), { recursive: true, force: true }); } catch {}
+  await sessionBackup.wipeRemote();
   messageStore.clear();
   console.log('🔄 Auth reset — restarting bot');
   setTimeout(() => startBot(), 1000);
@@ -917,6 +928,8 @@ async function saveGroupPending(primaryJid, fallbackJid, state, idx, cat) {
     await sendMessageSafe(primaryJid, fallbackJid, { text: `Saving to ${cat}, one moment...` });
     const fname = catDatedName(cat, cur.filename, cur.customName);
     const out = await uploadToCloudinary(cur.buffer, fname, cat);
+    // Recovery ledger: ye file ab vault me hai — reconnect recovery ise dobara nahi uthayegi
+    try { await recoveryLedger.recordSave(cur.fileMsgId, cur.buffer ? md5hex(cur.buffer) : null, Number(cur.fileMsg?.messageTimestamp) || 0); } catch {}
     noteNewCat(cat);
     state.pendingQueue.splice(idx, 1);
     let doneMsg = `Done.\nCategory: ${cat}\nFile: ${fname}${ocrNote(out)}\n\nVault: ${VAULT_URL}`;
@@ -1094,9 +1107,113 @@ async function sendMessageSafe(primaryJid, fallbackJid, content, extra) {
   throw lastErr || new Error('send failed - no target');
 }
 
+// ─── Missed-photo recovery: reconnect par band doran ki group photos ───
+// Candidates history sync (messaging-history.set / upsert append) aur purane
+// notify messages se jama hote hain. Sweep teen parakh lagata hai —
+// (1) message id ledger me hai? (2) photo ka MD5 vault ke kisi etag ya ledger
+// hash se milta hai? (3) waqt live-watermark se pehle ka hai? — koi aik bhi
+// "pehle se hai" kahe to file NAHI uthti. Jo bach jayen wo 'Recovered'
+// category me save hote hain aur group me aik summary jata hai.
+const recoveryCollector = new Map(); // waMsgId -> msg
+let recoveryTimer = null;
+let recoveryRunning = false;
+const RECOVERY_MAX_PER_RUN = 50;
+
+function recoveryCandidate(msg) {
+  try {
+    if (!msg || !msg.message || msg.key?.fromMe) return false;
+    const jid = msg.key?.remoteJid || '';
+    if (!jid.endsWith('@g.us')) return false;
+    if (!msg.key?.id) return false;
+    const inner = unwrapMsg(msg.message);
+    return !!(inner.imageMessage || inner.documentMessage || inner.videoMessage);
+  } catch { return false; }
+}
+function collectForRecovery(msg) {
+  if (!recoveryCandidate(msg)) return;
+  if (!recoveryCollector.has(msg.key.id)) recoveryCollector.set(msg.key.id, msg);
+  scheduleRecoverySweep();
+}
+function scheduleRecoverySweep() {
+  if (recoveryTimer || recoveryRunning) return;
+  recoveryTimer = setTimeout(() => { recoveryTimer = null; runRecoverySweep().catch((e) => console.error('recovery sweep fail:', e.message)); }, 20000);
+  if (recoveryTimer.unref) recoveryTimer.unref();
+}
+async function runRecoverySweep() {
+  if (recoveryRunning || !isConnected || !sock) return;
+  if (!recoveryCollector.size) return;
+  recoveryRunning = true;
+  const items = [...recoveryCollector.values()]
+    .sort((a, b) => (Number(a.messageTimestamp) || 0) - (Number(b.messageTimestamp) || 0))
+    .slice(0, RECOVERY_MAX_PER_RUN);
+  recoveryCollector.clear();
+  let saved = 0, skipped = 0, failed = 0;
+  let groupJid = null;
+  try {
+    await recoveryLedger.load();
+    const etags = await listVaultEtags(cloudinary, console);
+    console.log(`♻️ recovery sweep: ${items.length} candidates, vault etags=${etags.size}, watermark=${recoveryLedger.lastLiveTs}`);
+    const subjectCache = new Map();
+    for (const msg of items) {
+      try {
+        const jid = msg.key.remoteJid;
+        groupJid = groupJid || jid;
+        if (!subjectCache.has(jid)) {
+          let meta = groupCache.get(jid);
+          if (!meta) { meta = await sock.groupMetadata(jid); if (meta) groupCache.set(jid, meta); }
+          subjectCache.set(jid, String(meta?.subject || '').trim());
+        }
+        if (subjectCache.get(jid) !== GROUP_NAME) { skipped++; continue; }
+        const ts = Number(msg.messageTimestamp) || 0;
+        if (ts && ts <= recoveryLedger.lastLiveTs) { skipped++; continue; } // live dekha ja chuka
+        if (recoveryLedger.has(msg.key.id)) { skipped++; continue; } // pehle save ho chuki
+        const inner = unwrapMsg(msg.message);
+        const dlMsg = { ...msg, message: inner };
+        let buffer = null;
+        try { buffer = await downloadMediaMessage(dlMsg, 'buffer', {}, { logger, reuploadRequest: sock.updateMediaMessage }); } catch { buffer = null; }
+        if (!buffer) { failed++; continue; } // purani media WhatsApp se mit gayi
+        const hash = md5hex(buffer);
+        if (recoveryLedger.hasHash(hash) || etags.has(hash)) { skipped++; continue; } // content pehle se vault me hai
+        const isImage = !!inner.imageMessage;
+        const isVideo = !!inner.videoMessage;
+        const caption = cleanText(inner.imageMessage?.caption || inner.documentMessage?.caption || inner.videoMessage?.caption || '');
+        let filename = inner.documentMessage?.fileName || (cleanGroupName(caption.split('\n')[0]) || '');
+        if (!filename) {
+          const d = new Date((ts || Math.floor(Date.now() / 1000)) * 1000);
+          filename = `Recovered-${String(d.getDate()).padStart(2, '0')}-${String(d.getMonth() + 1).padStart(2, '0')}-${d.getFullYear()}_${String(d.getHours()).padStart(2, '0')}${String(d.getMinutes()).padStart(2, '0')}`;
+        }
+        if (!filename.includes('.')) filename += isImage ? '.jpg' : isVideo ? '.mp4' : '.bin';
+        filename = filename.replace(/[^a-zA-Z0-9._-]/g, '_').slice(0, 80);
+        filename = datedName(filename);
+        await uploadToCloudinary(buffer, filename, 'Recovered');
+        noteNewCat('Recovered');
+        await recoveryLedger.recordSave(msg.key.id, hash, ts);
+        saved++;
+        console.log(`♻️ recovered: ${filename} (msg ${msg.key.id})`);
+        await sleep(300);
+      } catch (e) {
+        failed++;
+        console.error('recovery item fail:', e.message);
+      }
+    }
+    console.log(`♻️ recovery done: saved=${saved} skipped=${skipped} failed=${failed}`);
+    if ((saved || failed) && groupJid) {
+      let text = '';
+      if (saved) text += `♻️ Bot band rehne ke doran aayi hui ${saved} file(s) khud recover karke "Recovered" category me save kar di hain.\nJo pehle se vault me thin, wo dobara nahi uthain.`;
+      if (failed) text += `${text ? '\n' : ''}⚠️ ${failed} purani file(s) download nahi ho sakin (WhatsApp se media mit chuka tha) — wo dobara bhej dein.`;
+      if (text) { try { await sock.sendMessage(groupJid, { text }); } catch {} }
+    }
+  } finally {
+    recoveryRunning = false;
+    if (recoveryCollector.size) scheduleRecoverySweep();
+  }
+}
+
 // ─── Bot Start — 100% Official Docs Compliant ───
 async function startBot() {
-  const { state, saveCreds } = await useMultiFileAuthState(path.join(__dirname, 'auth_info'));
+  // Local session na ho to pehle Cloudinary backup se restore (deploy/restart par QR nahi mangega)
+  await sessionBackup.restoreIfNeeded();
+  const { state, saveCreds } = await useMultiFileAuthState(AUTH_DIR);
   const { version } = await fetchLatestBaileysVersion();
   console.log(`📦 Baileys version: ${version.join('.')}`);
 
@@ -1110,7 +1227,8 @@ async function startBot() {
     browser: Browsers.macOS('Chrome'),
     markOnlineOnConnect: false,
     syncFullHistory: false,
-    shouldSyncHistoryMessage: () => false,
+    // History ON: band doran ki group photos recovery ke liye chahiye (sweep khud filter+dedupe karta hai)
+    shouldSyncHistoryMessage: () => true,
     generateHighQualityLinkPreview: false,
     msgRetryCounterCache,
     maxMsgRetryCount: 5,
@@ -1126,7 +1244,12 @@ async function startBot() {
     cachedGroupMetadata: async (jid) => groupCache.get(jid),
   });
 
-  sock.ev.on('creds.update', saveCreds);
+  sock.ev.on('creds.update', () => { saveCreds(); sessionBackup.markDirty(); });
+
+  // History sync se aye purane messages — recovery collector ko do (live flow inhe nahi chhuega)
+  sock.ev.on('messaging-history.set', ({ messages }) => {
+    try { for (const m of messages || []) collectForRecovery(m); } catch {}
+  });
 
   sock.ev.on('lid-mapping.update', (mapping) => {
     console.log('📋 LID mapping update:', JSON.stringify(mapping).slice(0, 500));
@@ -1154,6 +1277,7 @@ async function startBot() {
       if (loggedOut) {
         qrString = null;
         try { fs.rmSync(path.join(__dirname, 'auth_info'), { recursive: true, force: true }); } catch {}
+        await sessionBackup.wipeRemote(); // dead session cloud se bhi hata do, warna restore hota rahega
         console.log('🔴 Logged out — deleted auth_info, need new QR');
       } else {
         if (reconnectAttempts >= MAX_RECONNECT) {
@@ -1170,6 +1294,10 @@ async function startBot() {
       reconnectAttempts = 0;
       qrString = null;
       console.log('✅ Connected — id:', sock.user?.id);
+      // Session backup taaza rakho (pehla flush pairing ke foran baad) + recovery sweep ka intezam
+      sessionBackup.startAutoFlush();
+      sessionBackup.flushSoon(5000);
+      if (recoveryCollector.size) scheduleRecoverySweep();
     }
   });
 
@@ -1184,17 +1312,18 @@ async function startBot() {
         messageStore.delete(firstKey);
       }
     }
-    // Official: only handle real-time notify, ignore append/history
+    // History/append live flow me nahi jata — lekin group media recovery collector ko milega
     if (type !== 'notify') {
+      for (const m of messages) collectForRecovery(m);
       console.log('⏭️ skip: type is not notify');
       return;
     }
     for (const msg of messages) {
       try {
         if (!msg.message || msg.key.fromMe) { console.log('⏭️ skip: no message or fromMe'); continue; }
-        // Purane messages skip karo (deploy ke doran aye hue) — sirf naya maal process ho
+        // Purane messages live flow se skip — lekin band doran ki group photo recovery ke liye rakho
         const msgTs = Number(msg.messageTimestamp) || 0;
-        if (msgTs && msgTs < BOT_START_TIME - 60) { console.log('⏭️ skip: old message from before restart'); continue; }
+        if (msgTs && msgTs < BOT_START_TIME - 60) { collectForRecovery(msg); console.log('⏭️ skip: old message from before restart'); continue; }
         if (isJidBroadcast(msg.key.remoteJid)) { console.log('⏭️ skip: broadcast'); continue; }
 
         const rawJid = msg.key.remoteJid;
@@ -1710,6 +1839,8 @@ let doneMsg = `Done.\nCategory: ${cat}\nFile: ${fname}${ocrNote(out)}\n\nVault: 
                 const gIdx = state.pendingQueue.length;
                 const entry = { buffer, filename, customName: null, awaitingName: true, fileMsg: msg, fileMsgId: msg.key?.id || null, pollMsgId: null, pollSecret: null, qid: null, nameQid: null, confirmCat: null, fallbackSent: false, busy: false, done: false, createdAt: Date.now() };
                 state.pendingQueue.push(entry);
+                // Live-watermark: ye photo bot ne zinda halat me dekh li — recovery ise dobara nahi uthayegi
+                recoveryLedger.noteLiveSeen(msgTs);
                 const capName = (!captionCat && caption) ? cleanGroupName(caption.split('\n')[0]) : '';
                 if (capName && capName.length >= 2) {
                   entry.customName = capName; entry.awaitingName = false;
